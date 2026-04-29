@@ -321,6 +321,110 @@ class Learner:
         )
         return not any(marker in text for marker in weak_markers)
 
+    def save_user_profile(
+        self,
+        user_id: int,
+        name: str = "",
+        nickname: str = "",
+        job: str = "",
+        interests: str = "",
+        preferences: str = "",
+    ) -> list[str]:
+        """Store a structured user profile as multiple knowledge entries."""
+        stored: list[str] = []
+        fields = [
+            (name, "fact", "identity", "User's name is {value}.", 0.95),
+            (nickname, "preference", "identity", "User prefers to be called {value}.", 0.95),
+            (job, "fact", "profile", "User works as/is a {value}.", 0.85),
+            (interests, "preference", "profile", "User is interested in {value}.", 0.8),
+            (preferences, "preference", "profile", "User prefers {value}.", 0.8),
+        ]
+        for value, mem_type, topic, template, importance in fields:
+            value = value.strip()
+            if value:
+                fact = template.format(value=value)
+                mem_id = self.memory.store_knowledge(
+                    user_id=user_id,
+                    fact=fact,
+                    knowledge_type=mem_type,
+                    topic=topic,
+                    importance=importance,
+                    source="manual_teach",
+                )
+                if mem_id:
+                    stored.append(mem_id)
+                    self._append_learning_entry(
+                        user_id=user_id,
+                        source="manual_teach",
+                        memory_type=mem_type,
+                        topic=topic,
+                        fact=fact,
+                    )
+        return stored
+
+    def get_user_profile(self, user_id: int) -> dict:
+        """Return structured user profile from knowledge store."""
+        profile = {
+            "name": None,
+            "nickname": None,
+            "job": None,
+            "interests": None,
+            "preferences": None,
+        }
+        try:
+            results = self.memory.knowledge.get(
+                where={
+                    "$and": [
+                        {"user_id": str(user_id)},
+                        {"$or": [{"topic": "identity"}, {"topic": "profile"}]},
+                    ]
+                }
+            )
+        except Exception as e:
+            logger.debug("Profile lookup failed: %s", e)
+            return profile
+
+        docs = results.get("documents", [])
+        metas = results.get("metadatas", [])
+
+        for doc, meta in zip(docs, metas):
+            doc_lower = doc.lower()
+            meta_topic = meta.get("topic") if meta else ""
+
+            if meta_topic == "identity" or "name is" in doc_lower or "nama" in doc_lower:
+                if not profile["name"]:
+                    m = re.search(r"name is\s+([^,.!?]+)", doc, flags=re.IGNORECASE)
+                    if m:
+                        profile["name"] = m.group(1).strip()
+                if not profile["nickname"]:
+                    m = re.search(r"called\s+([^,.!?]+)", doc, flags=re.IGNORECASE)
+                    if m:
+                        profile["nickname"] = m.group(1).strip()
+                    else:
+                        m = re.search(r"panggil(?:\s+\w+)?\s+([^,.!?]+)", doc, flags=re.IGNORECASE)
+                        if m:
+                            profile["nickname"] = m.group(1).strip()
+
+            if meta_topic == "profile" or "works as" in doc_lower or "is a" in doc_lower:
+                if not profile["job"]:
+                    m = re.search(r"(?:works as|is a)\s+([^,.!?]+)", doc, flags=re.IGNORECASE)
+                    if m:
+                        profile["job"] = m.group(1).strip()
+
+            if meta_topic == "profile" and "interested in" in doc_lower:
+                if not profile["interests"]:
+                    m = re.search(r"interested in\s+([^,.!?]+)", doc, flags=re.IGNORECASE)
+                    if m:
+                        profile["interests"] = m.group(1).strip()
+
+            if meta_topic == "profile" and "prefers" in doc_lower:
+                if not profile["preferences"]:
+                    m = re.search(r"prefers?\s+([^,.!?]+)", doc, flags=re.IGNORECASE)
+                    if m:
+                        profile["preferences"] = m.group(1).strip()
+
+        return profile
+
     def teach_user(self, user_id: int, fact: str, topic: str = "manual") -> str | None:
         """Store an explicit user-taught memory."""
         memory_id = self.memory.store_knowledge(
@@ -466,53 +570,74 @@ class Learner:
 
         patterns = [
             (
-                r"\b(?:nama saya|namaku|nama aku|my name is)\s+(.{2,80})$",
+                r"\b(?:nama saya|namaku|nama aku|my name is)\s+([^,.!?\n]{2,80})",
                 "fact",
                 "identity",
                 "User's name is {value}.",
                 0.95,
             ),
             (
-                r"\b(?:panggil saya|panggil aku|call me)\s+(.{2,80})$",
+                r"\b(?:panggil saya|panggil aku|call me)\s+([^,.!?\n]{2,80})",
                 "preference",
                 "identity",
                 "User prefers to be called {value}.",
                 0.95,
             ),
             (
-                r"\b(?:saya suka|aku suka|i like|i prefer)\s+(.{2,160})$",
+                r"\b(?:saya suka|aku suka|i like|i prefer)\s+([^,.!?\n]{2,160})",
                 "preference",
                 "preference",
                 "User likes or prefers {value}.",
                 0.8,
             ),
             (
-                r"\b(?:saya tidak suka|aku tidak suka|i dislike|i don't like)\s+(.{2,160})$",
+                r"\b(?:saya tidak suka|aku tidak suka|i dislike|i don't like)\s+([^,.!?\n]{2,160})",
                 "preference",
                 "preference",
                 "User dislikes {value}.",
                 0.8,
             ),
             (
-                r"\b(?:jangan|don't)\s+(.{2,160})$",
+                r"\b(?:jangan|don't)\s+([^,.!?\n]{2,160})",
                 "preference",
                 "style",
                 "User prefers that Kitsune does not {value}.",
                 0.75,
             ),
             (
-                r"\b(?:ingat bahwa|ingat kalau|remember that)\s+(.{2,180})$",
+                r"\b(?:ingat bahwa|ingat kalau|remember that)\s+([^,.!?\n]{2,180})",
                 "fact",
                 "manual",
                 "User explicitly asked Kitsune to remember: {value}.",
                 0.9,
             ),
             (
-                r"\b(?:gunakan bahasa|pakai bahasa|reply in|use language)\s+(.{2,80})$",
+                r"\b(?:gunakan bahasa|pakai bahasa|reply in|use language)\s+([^,.!?\n]{2,80})",
                 "preference",
                 "language",
                 "User prefers language/style: {value}.",
                 0.85,
+            ),
+            (
+                r"\b(?:saya seorang|aku seorang|i am a[n]?|i work as|pekerjaan saya|kerjaan saya|kerjaan gue|kerjaan aku|gue kerja)\s+([^,.!?\n]{2,120})",
+                "fact",
+                "profile",
+                "User works as/is a {value}.",
+                0.85,
+            ),
+            (
+                r"\b(?:minat saya|aku tertarik|i am interested in|saya tertarik|hobi saya|hobi gue|hobi aku)\s+([^,.!?\n]{2,160})",
+                "preference",
+                "profile",
+                "User is interested in {value}.",
+                0.8,
+            ),
+            (
+                r"\b(?:preferensi saya|preferensi gue|aku prefer|i prefer)\s+([^,.!?\n]{2,160})",
+                "preference",
+                "profile",
+                "User prefers {value}.",
+                0.8,
             ),
         ]
 

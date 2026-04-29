@@ -31,6 +31,7 @@ from kitsune.learner import Learner
 from kitsune.memory import MemorySystem
 from kitsune.reminder import ReminderSystem
 from kitsune.router import Router
+from kitsune.search import WebSearch, SearchTool
 from kitsune.self_improve import SelfImprover
 from kitsune.tools import (
     LocalToolRegistry,
@@ -70,6 +71,20 @@ class KitsuneBot:
             if tools_enabled_from_env()
             else None
         )
+        self.web_search = (
+            WebSearch(
+                ollama_api_key=config.ollama_api_key,
+                ollama_api_base=config.ollama_api_base,
+                google_api_key=config.google_api_key,
+                google_cx=config.google_cx,
+                max_results=config.web_search_max_results,
+                timeout=config.web_search_timeout,
+            )
+            if config.enable_web_search
+            else None
+        )
+        self.search_tool = SearchTool(self.web_search)
+
         self.reminders = ReminderSystem(
             storage_path=self.config.data_dir / "reminders.json",
             callback=self._on_reminder_trigger,
@@ -128,6 +143,10 @@ class KitsuneBot:
         router.message.register(self._cmd_improve, Command("improve"))
         router.message.register(self._cmd_improvements, Command("improvements"))
         router.message.register(self._cmd_whoami, Command("whoami"))
+        router.message.register(self._cmd_intro, Command("intro"))
+        router.message.register(self._cmd_config, Command("config"))
+        router.message.register(self._cmd_terminal, Command("terminal", "sh", "shell"))
+        router.message.register(self._cmd_search, Command("search"))
         router.message.register(self._cmd_remind, Command("remind"))
         router.message.register(self._cmd_reminders, Command("reminders"))
         router.message.register(self._cmd_cancel_reminder, Command("cancel_reminder"))
@@ -183,6 +202,9 @@ class KitsuneBot:
             f"• Merangkum teks panjang\n\n"
             f"🧠 Aku otomatis memilih model AI terbaik untuk setiap tugas, "
             f"dan belajar dari setiap interaksi kita!\n\n"
+            f"💡 **Mau aku kenali kamu?**\n"
+            f"Bilang aja langsung: _nama saya Budi, developer fullstack, suka Python_.\n"
+            f"Aku bakal otomatis catat! 🧠\n\n"
             f"Ketik /help untuk melihat semua perintah."
         )
         await self._safe_answer(message, welcome, parse_mode=ParseMode.MARKDOWN)
@@ -203,6 +225,14 @@ class KitsuneBot:
             "/tool <nama> <argumen> — Jalankan tool lokal eksplisit\n"
             "/sendfile <path> [caption] — Kirim file workspace ke chat ini\n"
             "/access — Owner melihat status akses\n"
+            "/whoami — Lihat profil & statistik pribadimu\n"
+            "/intro — Kenalkan dirimu (nama, pekerjaan, minat, dll)\n"
+            "/remind <waktu> <pesan> — Buat pengingat\n"
+            "/reminders — Lihat pengingat aktif\n"
+            "/cancel_reminder <id> — Batalkan pengingat\n"
+            "/search <query> — Cari di web (real-time info)\n"
+            "/config — Lihat/edit konfigurasi bot (owner only)\n"
+            "/terminal <command> — Jalankan perintah shell (owner only)\n"
             "/improve <ide/masalah> — Buat proposal patch aman untuk direview\n"
             "/improvements — Lihat proposal improvement terbaru\n"
             "/forget — Hapus semua memori tentangmu\n"
@@ -439,22 +469,246 @@ class KitsuneBot:
         if not user or not self._is_message_authorized(message):
             return
 
-        identity = self.memory.get_user_identity(user.id)
-        name = identity.get("name")
-        nickname = identity.get("nickname")
+        profile = self.learner.get_user_profile(user.id)
+        name = profile.get("name")
+        nickname = profile.get("nickname")
+        job = profile.get("job")
+        interests = profile.get("interests")
+        preferences = profile.get("preferences")
 
         lines = ["👤 **Profil yang dikenali:**"]
         if name:
             lines.append(f"• Nama: {name}")
         if nickname:
             lines.append(f"• Panggilan: {nickname}")
-        if not name and not nickname:
-            lines.append("Belum ada data identitas.")
-            lines.append("Coba bilang: _nama saya Fauzan_ atau _panggil aku Fauzan_")
+        if job:
+            lines.append(f"• Pekerjaan: {job}")
+        if interests:
+            lines.append(f"• Minat: {interests}")
+        if preferences:
+            lines.append(f"• Preferensi: {preferences}")
+        if not any([name, nickname, job, interests, preferences]):
+            lines.append("Belum ada data profil.")
+            lines.append("Gunakan /intro untuk mengisi profilmu!")
 
         lines.append("")
         lines.append(self.learner.get_user_stats(user.id))
         await self._safe_answer(message, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+    async def _cmd_intro(self, message: Message):
+        user = message.from_user
+        if not user or not self._is_message_authorized(message):
+            return
+
+        args = self._command_args(message)
+        if not args:
+            await self._safe_answer(
+                message,
+                (
+                    "💡 **Mau aku kenali kamu?**\n\n"
+                    "Kamu bisa bilang langsung tanpa perintah:\n"
+                    "_nama saya Budi, developer fullstack, suka Python & React_\n\n"
+                    "Atau pakai format terstruktur:\n"
+                    "`/intro Nama: Budi | Job: Developer | Minat: AI | Panggil: mas`\n\n"
+                    "Aku bakal otomatis save dan ingat terus! 🧠"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        profile = self._parse_intro_args(args)
+        stored = self.learner.save_user_profile(
+            user_id=user.id,
+            name=profile.get("nama", ""),
+            nickname=profile.get("panggil", ""),
+            job=profile.get("job", ""),
+            interests=profile.get("minat", ""),
+            preferences=profile.get("preferensi", ""),
+        )
+
+        if stored:
+            lines = ["✅ Profil tersimpan! Aku bakal ingat:"]
+            if profile.get("nama"):
+                lines.append(f"• Nama: {profile['nama']}")
+            if profile.get("panggil"):
+                lines.append(f"• Panggilan: {profile['panggil']}")
+            if profile.get("job"):
+                lines.append(f"• Pekerjaan: {profile['job']}")
+            if profile.get("minat"):
+                lines.append(f"• Minat: {profile['minat']}")
+            if profile.get("preferensi"):
+                lines.append(f"• Preferensi: {profile['preferensi']}")
+            lines.append("")
+            lines.append("Nanti kalo mau update, kirim /intro lagi ya!")
+        else:
+            lines = ["⚠️ Gagal menyimpan profil. Coba lagi nanti."]
+
+        await self._safe_answer(message, "\n".join(lines))
+
+    async def _cmd_config(self, message: Message):
+        user = message.from_user
+        if not user or not self._is_owner(user.id):
+            await self._safe_answer(message, "⛔ Hanya owner yang bisa akses config.")
+            return
+
+        args = self._command_args(message)
+        if not args:
+            lines = ["⚙️ **Konfigurasi:**\n"]
+            lines.append(f"enable_streaming: {self.config.enable_streaming}")
+            lines.append(f"telegram_stream_mode: {self.config.telegram_stream_mode}")
+            lines.append(f"fast_routing: {self.config.fast_routing}")
+            lines.append(f"background_learning: {self.config.background_learning}")
+            lines.append(f"autonomous_learning: {self.config.autonomous_learning}")
+            lines.append(f"auto_learn_from_files: {self.config.auto_learn_from_files}")
+            lines.append(f"auto_memory_markdown: {self.config.auto_memory_markdown}")
+            lines.append(f"log_level: {self.config.log_level}")
+            lines.append(f"stream_edit_interval: {self.config.stream_edit_interval}s")
+            lines.append(f"stream_min_chars: {self.config.stream_min_chars}")
+            lines.append(f"file_context_max_chars: {self.config.file_context_max_chars}")
+            lines.append(f"enable_self_improve: {self.config.enable_self_improve}")
+            lines.append("")
+            lines.append("Gunakan `/config set <key> <value>` untuk mengubah.")
+            lines.append("Gunakan `/config reload` untuk reload .env.")
+            await self._safe_answer(message, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+            return
+
+        parts = args.split(maxsplit=1)
+        subcommand = parts[0].lower()
+
+        if subcommand == "reload":
+            try:
+                import importlib
+                import kitsune.config as config_module
+                importlib.reload(config_module)
+                await self._safe_answer(message, "✅ Config module direload. Restart bot untuk efek penuh.")
+            except Exception as e:
+                await self._safe_answer(message, f"❌ Gagal reload: {e}")
+            return
+
+        if subcommand == "set" and len(parts) > 1:
+            rest = parts[1]
+            kv = rest.split(maxsplit=1)
+            if len(kv) < 2:
+                await self._safe_answer(message, "Format: `/config set <key> <value>`")
+                return
+            key, value = kv[0], kv[1]
+            safe_bool_keys = {
+                "enable_streaming", "fast_routing", "background_learning",
+                "autonomous_learning", "auto_learn_from_files", "auto_memory_markdown",
+                "enable_self_improve",
+            }
+            safe_str_keys = {
+                "telegram_stream_mode", "log_level",
+            }
+            safe_float_keys = {
+                "stream_edit_interval",
+            }
+            safe_int_keys = {
+                "stream_min_chars", "file_context_max_chars",
+            }
+
+            try:
+                if key in safe_bool_keys:
+                    parsed = value.lower() in {"true", "1", "yes", "on"}
+                    setattr(self.config, key, parsed)
+                elif key in safe_str_keys:
+                    setattr(self.config, key, value)
+                elif key in safe_float_keys:
+                    setattr(self.config, key, float(value))
+                elif key in safe_int_keys:
+                    setattr(self.config, key, int(value))
+                else:
+                    await self._safe_answer(
+                        message,
+                        f"Key `{key}` tidak bisa diedit via chat (bukan safe config)."
+                    )
+                    return
+                await self._safe_answer(message, f"✅ `{key}` = `{value}`")
+            except Exception as e:
+                await self._safe_answer(message, f"❌ Gagal set config: {e}")
+            return
+
+        await self._safe_answer(
+            message,
+            "Subcommand tidak dikenal.\n"
+            "`/config` — lihat config\n"
+            "`/config set <key> <value>` — edit\n"
+            "`/config reload` — reload .env",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    async def _cmd_terminal(self, message: Message):
+        user = message.from_user
+        if not user or not self._is_owner(user.id):
+            await self._safe_answer(message, "⛔ Hanya owner yang bisa akses terminal.")
+            return
+
+        args = self._command_args(message)
+        if not args:
+            await self._safe_answer(
+                message,
+                "🖥️ **Terminal**\n\n"
+                "Format: `/terminal <command>`\n"
+                "Contoh: `/terminal ls -la`\n\n"
+                "⚠️ Hati-hati, ini mengeksekusi shell langsung!",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if not self.local_tools:
+            await self._safe_answer(message, "Tool lokal belum aktif. Set ENABLE_LOCAL_TOOLS=true di .env.")
+            return
+
+        result = self.local_tools.run(f"shell {args}")
+        prefix = "✅" if result.ok else "❌"
+        output = result.output[:3500] if result.output else "(no output)"
+        await self._safe_answer(message, f"{prefix}\n```\n{output}\n```", parse_mode=ParseMode.MARKDOWN)
+
+    async def _cmd_search(self, message: Message):
+        user = message.from_user
+        if not user or not self._is_message_authorized(message):
+            await self._safe_answer(message, "⛔ Maaf, kamu tidak punya akses ke bot ini.")
+            return
+
+        query = self._command_args(message)
+        if not query:
+            await self._safe_answer(
+                message,
+                "🔍 **Web Search**\n\n"
+                "Format: `/search <query>`\n"
+                "Contoh:\n"
+                "`/search harga bitcoin hari ini`\n"
+                "`/search berita AI terbaru`\n\n"
+                "Atau tanya langsung tanpa /search — aku bakal otomatis cari kalau perlu!",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        if not self.web_search:
+            await self._safe_answer(
+                message,
+                "🔍 Web search belum aktif. Set ENABLE_WEB_SEARCH=true di .env untuk mengaktifkan."
+            )
+            return
+
+        await self._safe_send_chat_action(message)
+        try:
+            results = self.web_search.search(query)
+            if not results:
+                await self._safe_answer(message, "🔍 Tidak ada hasil untuk pencarian tersebut.")
+                return
+
+            lines = [f"🔍 **Hasil pencarian:** `{query}`\n"]
+            for idx, result in enumerate(results, 1):
+                lines.append(f"{idx}. **{result.title}**")
+                lines.append(f"   {result.snippet[:200]}" if result.snippet else "")
+                lines.append(f"   [Buka link]({result.url})")
+                lines.append("")
+
+            await self._safe_answer(message, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error("Web search failed: %s", e)
+            await self._safe_answer(message, f"❌ Gagal melakukan pencarian: {e}")
 
     async def _cmd_remind(self, message: Message):
         user = message.from_user
@@ -719,11 +973,24 @@ class KitsuneBot:
 
             task_category, _ = await self.router.classify_task(text)
             primary_model, fallback_model = self.router.get_model_for_task(task_category)
+
+            # Auto web search for real-time queries
+            search_context = ""
+            if self.web_search and task_category == "web_search":
+                try:
+                    results = self.web_search.search(text)
+                    if results:
+                        search_context = self.web_search.format_for_prompt(results)
+                        logger.info("🔍 Auto-search injected %d results for web_search task", len(results))
+                except Exception as e:
+                    logger.warning("Auto web search failed: %s", e)
+
             memory_context = "\n\n".join(
                 part
                 for part in [
                     self.learner.get_user_profile_context(user.id),
                     self.memory.get_user_context(user.id, text),
+                    search_context,
                 ]
                 if part
             )
@@ -756,6 +1023,9 @@ class KitsuneBot:
                 self._chat_history[hist_key] = self._chat_history[hist_key][-20:]
 
             await self._send_or_finalize_response(message, response, task_category, interaction_id)
+
+            # Detect if user shared profile info and acknowledge
+            await self._maybe_acknowledge_learned_profile(message, text)
 
             learning_args = dict(
                 user_id=user.id,
@@ -933,63 +1203,19 @@ class KitsuneBot:
                     parse_mode=ParseMode.MARKDOWN,
                     reply_markup=keyboard,
                 )
-                if interaction_id:
-                    self._register_feedback(
-                        stream_message.message_id,
-                        _FeedbackMeta(
-                            interaction_id=interaction_id,
-                            user_id=message.from_user.id if message.from_user else 0,
-                            user_message=message.text or "",
-                            bot_response=response.content,
-                            task_category=task_category,
-                            model_used=response.model_used,
-                        ),
-                    )
+                self._try_register_feedback_meta(stream_message, message, response, task_category, interaction_id)
                 return
             except TelegramBadRequest:
                 await self._safe_edit_text(stream_message, reply_text, reply_markup=keyboard)
-                if interaction_id:
-                    self._register_feedback(
-                        stream_message.message_id,
-                        _FeedbackMeta(
-                            interaction_id=interaction_id,
-                            user_id=message.from_user.id if message.from_user else 0,
-                            user_message=message.text or "",
-                            bot_response=response.content,
-                            task_category=task_category,
-                            model_used=response.model_used,
-                        ),
-                    )
+                self._try_register_feedback_meta(stream_message, message, response, task_category, interaction_id)
                 return
 
         try:
             sent = await self._safe_answer(message, reply_text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
-            if sent and interaction_id:
-                self._register_feedback(
-                    sent.message_id,
-                    _FeedbackMeta(
-                        interaction_id=interaction_id,
-                        user_id=message.from_user.id if message.from_user else 0,
-                        user_message=message.text or "",
-                        bot_response=response.content,
-                        task_category=task_category,
-                        model_used=response.model_used,
-                    ),
-                )
+            self._try_register_feedback_meta(sent, message, response, task_category, interaction_id)
         except TelegramBadRequest:
             sent = await self._safe_answer(message, reply_text, reply_markup=keyboard)
-            if sent and interaction_id:
-                self._register_feedback(
-                    sent.message_id,
-                    _FeedbackMeta(
-                        interaction_id=interaction_id,
-                        user_id=message.from_user.id if message.from_user else 0,
-                        user_message=message.text or "",
-                        bot_response=response.content,
-                        task_category=task_category,
-                        model_used=response.model_used,
-                    ),
-                )
+            self._try_register_feedback_meta(sent, message, response, task_category, interaction_id)
 
     async def _safe_send_chat_action(self, message: Message, action: ChatAction = ChatAction.TYPING):
         now = time.monotonic()
@@ -1107,13 +1333,17 @@ class KitsuneBot:
         return f"{minutes} menit lagi"
 
     async def _feedback_callback(self, callback: CallbackQuery):
-        if not callback.message:
+        if not callback.message or not callback.from_user:
             await callback.answer("Pesan tidak ditemukan.", show_alert=True)
             return
 
         meta = self._feedback_registry.get(callback.message.message_id)
         if not meta:
             await callback.answer("Feedback window expired.", show_alert=True)
+            return
+
+        if callback.from_user.id != meta.user_id:
+            await callback.answer("Tombol ini bukan untukmu.", show_alert=True)
             return
 
         if meta.responded:
@@ -1163,6 +1393,28 @@ class KitsuneBot:
             ]
         )
 
+    def _try_register_feedback_meta(
+        self,
+        sent_message: Message | None,
+        original_message: Message,
+        response: BrainResponse,
+        task_category: str,
+        interaction_id: str | None,
+    ):
+        if not interaction_id or not sent_message:
+            return
+        self._register_feedback(
+            sent_message.message_id,
+            _FeedbackMeta(
+                interaction_id=interaction_id,
+                user_id=original_message.from_user.id if original_message.from_user else 0,
+                user_message=original_message.text or "",
+                bot_response=response.content,
+                task_category=task_category,
+                model_used=response.model_used,
+            ),
+        )
+
     def _register_feedback(self, message_id: int, meta: _FeedbackMeta):
         self._feedback_registry[message_id] = meta
         overflow = len(self._feedback_registry) - 200
@@ -1187,6 +1439,113 @@ class KitsuneBot:
             if not next_candidate.exists():
                 return next_candidate
         return upload_dir / f"{stem}_{int(time.time())}{suffix}"
+
+    async def _maybe_acknowledge_learned_profile(self, message: Message, user_message: str):
+        """Send a subtle acknowledgment when profile info is detected in chat."""
+        try:
+            memories = self.learner._extract_direct_memories(user_message)
+            if not memories:
+                return
+            # Only acknowledge identity/profile facts, not generic preferences
+            profile_types = {"identity", "profile"}
+            profile_memories = [m for m in memories if m.get("topic") in profile_types]
+            if not profile_memories:
+                return
+
+            # Build a short acknowledgment
+            labels = []
+            for mem in profile_memories:
+                fact_lower = mem.get("fact", "").lower()
+                if "name is" in fact_lower:
+                    labels.append("namamu")
+                elif "called" in fact_lower or "panggil" in fact_lower:
+                    labels.append("panggilanmu")
+                elif "works as" in fact_lower or "is a" in fact_lower:
+                    labels.append("pekerjaanmu")
+                elif "interested in" in fact_lower:
+                    labels.append("minatmu")
+                else:
+                    labels.append("itu")
+
+            if labels:
+                unique_labels = []
+                seen = set()
+                for label in labels:
+                    if label not in seen:
+                        unique_labels.append(label)
+                        seen.add(label)
+                ack = f"🧠 Oke, aku catat {', '.join(unique_labels)}!"
+                await self._safe_answer(message, ack)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _parse_intro_args(text: str) -> dict:
+        """Parse /intro arguments into structured profile fields."""
+        profile: dict[str, str] = {}
+        text = text.strip()
+
+        # Pattern 1: Pipe-separated key:value format
+        # Nama: Budi | Job: Developer | Minat: AI, Coding | Preferensi: Python | Panggil: mas
+        pipe_pattern = re.findall(
+            r"(?i)(?:nama|panggil|job|pekerjaan|minat|interests?|preferensi|preferences?)\s*[:=]\s*([^|]+)",
+            text,
+        )
+        if pipe_pattern:
+            # Try to match each field individually
+            for key, val in re.findall(
+                r"(?i)(nama|panggil|job|pekerjaan|minat|interests?|preferensi|preferences?)\s*[:=]\s*([^|]+)",
+                text,
+            ):
+                key_lower = key.lower().strip()
+                val_clean = val.strip(" .,;!\n")
+                if key_lower in {"nama", "name"}:
+                    profile["nama"] = val_clean
+                elif key_lower in {"panggil", "call", "nickname"}:
+                    profile["panggil"] = val_clean
+                elif key_lower in {"job", "pekerjaan", "work", "profesi"}:
+                    profile["job"] = val_clean
+                elif key_lower in {"minat", "interests", "hobi", "hobby"}:
+                    profile["minat"] = val_clean
+                elif key_lower in {"preferensi", "preferences", "suka", "like"}:
+                    profile["preferensi"] = val_clean
+            return profile
+
+        # Pattern 2: Natural language extraction
+        text_lower = text.lower()
+
+        # Name: "nama saya/gue/aku ..." or "name is ..."
+        m = re.search(r"(?:nama\s+(?:saya|gue|aku)|my name is|nama:)\s+([^,.\n!?]+)", text, flags=re.IGNORECASE)
+        if m:
+            profile["nama"] = m.group(1).strip()
+
+        # Nickname: "panggil saya/gue/aku ..." or "call me ..."
+        m = re.search(r"(?:panggil\s+(?:saya|gue|aku)|call me|panggil:)\s+([^,.\n!?]+)", text, flags=re.IGNORECASE)
+        if m:
+            profile["panggil"] = m.group(1).strip()
+
+        # Job: "developer", "saya seorang ...", "kerja sebagai ...", "job: ..."
+        m = re.search(r"(?:saya seorang|aku seorang|i am a[n]?|i work as|pekerjaan\s*[:=]|job\s*[:=]|kerja\s+sebagai|profesi\s*[:=])\s+([^,.\n!?]+)", text, flags=re.IGNORECASE)
+        if m:
+            profile["job"] = m.group(1).strip()
+        else:
+            # Fallback: common job titles
+            job_keywords = r"\b(developer|engineer|programmer|designer|student|mahasiswa|pelajar|data scientist|manager|freelancer|fullstack|backend|frontend|devops)\b"
+            m = re.search(job_keywords, text, flags=re.IGNORECASE)
+            if m:
+                profile["job"] = m.group(1).strip()
+
+        # Interests: "suka ...", "minat ...", "interested in ..."
+        m = re.search(r"(?:suka|minat|interested in|hobi|hobi\s*[:=]|minat\s*[:=])\s+([^,.\n!?]+)", text, flags=re.IGNORECASE)
+        if m:
+            profile["minat"] = m.group(1).strip()
+
+        # Preferences: "preferensi ...", "prefer ...", "suka pakai ..."
+        m = re.search(r"(?:preferensi|prefer|suka\s+pakai|preferensi\s*[:=])\s+([^,.\n!?]+)", text, flags=re.IGNORECASE)
+        if m:
+            profile["preferensi"] = m.group(1).strip()
+
+        return profile
 
     @staticmethod
     def _safe_filename(filename: str) -> str:

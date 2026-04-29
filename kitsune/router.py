@@ -25,6 +25,7 @@ TASK_CATEGORIES = [
     "math",
     "translation",
     "summarization",
+    "web_search",
 ]
 
 
@@ -104,6 +105,19 @@ class Router:
     def _classify_task_locally(message: str) -> str:
         text = message.lower()
         stripped = text.strip()
+
+        # Web search detection
+        search_keywords = (
+            r"\b(cari|cariin|search|google|lookup|find)\b.*\b(info|informasi|tentang|about)\b",
+            r"\b(berita|news|update|terbaru|latest)\b",
+            r"\b(cuaca|weather|harga bitcoin|btc|harga emas|gold price)\b",
+            r"\b(jadwal|schedule|skor|score|pertandingan)\b",
+            r"\b(berapa|how much|what is)\b.*\b(harga|price|nilai|value)\b",
+            r"\b(kapan|when)\b.*\b(rilis|release|launch|rilis|rilis)\b",
+        )
+        for pattern in search_keywords:
+            if re.search(pattern, text):
+                return "web_search"
 
         if re.search(r"```|def |class |function |const |let |var |npm |pip |docker|traceback|error|bug|kode|coding|script|api|json|yaml|regex", text):
             return "coding"
@@ -248,7 +262,7 @@ class Router:
                         provider,
                         model,
                     )
-                    return self._pick_classifier_model()
+                    return pick_fast_model(self.config)
 
         return model
 

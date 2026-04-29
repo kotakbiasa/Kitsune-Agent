@@ -125,6 +125,7 @@ class Config:
             "math": self._env_list("OLLAMA_MATH_MODELS", [self.ollama_reasoning_model, "nemotron-3-super:cloud", "glm-5.1:cloud", "kimi-k2.6:cloud"]),
             "translation": self._env_list("OLLAMA_TRANSLATION_MODELS", [self.ollama_fast_model, self.ollama_legacy_fast_model, "gemini-3-flash-preview:cloud", "ministral-3:14b-cloud"]),
             "summarization": self._env_list("OLLAMA_SUMMARIZATION_MODELS", [self.ollama_legacy_fast_model, "gemini-3-flash-preview:cloud", self.ollama_productivity_model, "deepseek-v4-flash:cloud"]),
+            "web_search": self._env_list("OLLAMA_WEB_SEARCH_MODELS", [self.ollama_reasoning_model, "nemotron-3-super:cloud", "glm-5.1:cloud", "kimi-k2.6:cloud"]),
         }
 
         # Set keys in environment for LiteLLM
@@ -209,6 +210,18 @@ class Config:
             "on",
         }
         self.memory_markdown_path = MEMORY_MARKDOWN_PATH
+
+        # --- Web search ---
+        self.enable_web_search = os.getenv("ENABLE_WEB_SEARCH", "true").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self.google_api_key = os.getenv("GOOGLE_API_KEY", "")
+        self.google_cx = os.getenv("GOOGLE_CX", "")
+        self.web_search_max_results = max(1, min(int(self._env_float("WEB_SEARCH_MAX_RESULTS", 5.0)), 10))
+        self.web_search_timeout = max(5, min(int(self._env_float("WEB_SEARCH_TIMEOUT", 15.0)), 60))
 
         # --- Safe self-improvement proposals ---
         self.enable_self_improve = os.getenv("ENABLE_SELF_IMPROVE", "true").strip().lower() in {
@@ -441,6 +454,15 @@ DEFAULT_ROUTING_RULES = {
             "total_uses": 0,
             "avg_response_time": 0.0,
         },
+        "web_search": {
+            "description": "Web search for real-time information",
+            "primary_model": "ollama/deepseek-v4-flash:cloud",
+            "fallback_model": "ollama/nemotron-3-super:cloud",
+            "success_count": 0,
+            "fail_count": 0,
+            "total_uses": 0,
+            "avg_response_time": 0.0,
+        },
     },
 }
 
@@ -456,7 +478,8 @@ DEFAULT_PROMPT_TEMPLATES = {
     ),
     "classifier_prompt": (
         "Classify the following user message into exactly ONE category. "
-        "Categories: simple_qa, complex_reasoning, coding, creative_writing, math, translation, summarization. "
+        "Categories: simple_qa, complex_reasoning, coding, creative_writing, math, translation, summarization, web_search. "
+        "Use web_search if the query asks for current information, news, weather, prices, or facts that may change over time. "
         "Reply with ONLY the category name, nothing else.\n\n"
         "User message: {message}"
     ),

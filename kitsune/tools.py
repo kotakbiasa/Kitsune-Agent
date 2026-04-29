@@ -1,8 +1,7 @@
 """
 Kitsune local tool registry.
 
-This uses the mirrored claude-code Python port in kitsune/src for metadata and
-routing, while keeping execution to a smaller safe subset for a Telegram bot.
+Safe local tools for explicit Telegram /tool calls.
 """
 
 from __future__ import annotations
@@ -15,11 +14,9 @@ import re
 import shlex
 import subprocess
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
-SRC_REFERENCE_DATA_DIR = Path(__file__).parent / "src" / "reference_data"
 DEFAULT_MAX_SEND_FILE_BYTES = 45 * 1024 * 1024
 TEXT_PREVIEW_BYTES = 64 * 1024
 TEXT_PREVIEW_CHARS = 3500
@@ -108,115 +105,6 @@ class ToolDefinition:
     usage: str
 
 
-@dataclass(frozen=True)
-class ArchiveToolEntry:
-    name: str
-    source_hint: str
-    responsibility: str
-    kind: str
-
-
-class ClaudeCodeSource:
-    """Read mirrored tool/command metadata from kitsune/src."""
-
-    TOOL_SNAPSHOT = "src/reference_data/tools_snapshot.json"
-    COMMAND_SNAPSHOT = "src/reference_data/commands_snapshot.json"
-
-    def __init__(self, reference_data_dir: str | Path = SRC_REFERENCE_DATA_DIR):
-        self.reference_data_dir = Path(reference_data_dir)
-
-    def available(self) -> bool:
-        return self.reference_data_dir.is_dir()
-
-    def source_label(self) -> str:
-        return str(self.reference_data_dir) if self.available() else "missing"
-
-    def load_tools(self) -> tuple[ArchiveToolEntry, ...]:
-        return self._load_snapshot(self.TOOL_SNAPSHOT, "tool")
-
-    def load_commands(self) -> tuple[ArchiveToolEntry, ...]:
-        return self._load_snapshot(self.COMMAND_SNAPSHOT, "command")
-
-    def search(self, query: str, limit: int = 20) -> list[ArchiveToolEntry]:
-        query = query.lower().strip()
-        entries = [*self.load_tools(), *self.load_commands()]
-        if not query:
-            return entries[:limit]
-        matches = [
-            entry
-            for entry in entries
-            if query in entry.name.lower()
-            or query in entry.source_hint.lower()
-            or query in entry.responsibility.lower()
-        ]
-        return matches[:limit]
-
-    def render(self, kind: str = "tools", query: str = "", limit: int = 20) -> str:
-        if not self.available():
-            return f"Source metadata tidak ditemukan: {self.reference_data_dir}"
-
-        if kind == "commands":
-            entries = list(self.load_commands())
-        elif kind == "all":
-            entries = [*self.load_tools(), *self.load_commands()]
-        else:
-            entries = list(self.load_tools())
-
-        if query:
-            needle = query.lower()
-            entries = [
-                entry
-                for entry in entries
-                if needle in entry.name.lower()
-                or needle in entry.source_hint.lower()
-                or needle in entry.responsibility.lower()
-            ]
-
-        lines = [
-            f"Claude-code metadata source: {self.source_label()}",
-            f"{kind}: {len(entries)} match(es)",
-            "",
-        ]
-        for entry in entries[:limit]:
-            lines.append(f"- [{entry.kind}] {entry.name} — {entry.source_hint}")
-        return "\n".join(lines)
-
-    @lru_cache(maxsize=4)
-    def _load_snapshot(self, member: str, kind: str) -> tuple[ArchiveToolEntry, ...]:
-        raw = self._read_snapshot(member)
-        if raw is None:
-            return ()
-
-        try:
-            data = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return ()
-
-        entries = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            entries.append(
-                ArchiveToolEntry(
-                    name=str(item.get("name", "")),
-                    source_hint=str(item.get("source_hint", "")),
-                    responsibility=str(item.get("responsibility", "")),
-                    kind=kind,
-                )
-            )
-        return tuple(entries)
-
-    def _read_snapshot(self, member: str) -> bytes | None:
-        fallback_name = Path(member).name
-        fallback_path = self.reference_data_dir / fallback_name
-        if fallback_path.is_file():
-            try:
-                return fallback_path.read_bytes()
-            except OSError:
-                return None
-        return None
-
-
 class LocalToolRegistry:
     """Safe local tools for explicit Telegram /tool calls."""
 
@@ -229,7 +117,6 @@ class LocalToolRegistry:
         self.workspace_root = Path(workspace_root).resolve()
         self.enable_shell = enable_shell
         self.max_send_file_bytes = max_send_file_bytes or max_send_file_bytes_from_env()
-        self.claude_source = ClaudeCodeSource()
         self._definitions = {
             "list_files": ToolDefinition(
                 name="list_files",
@@ -266,26 +153,6 @@ class LocalToolRegistry:
                 purpose="Run a shell command in the Kitsune workspace when explicitly enabled",
                 usage="/tool shell <command>",
             ),
-            "source_tools": ToolDefinition(
-                name="source_tools",
-                purpose="List mirrored tools loaded from kitsune/src metadata",
-                usage="/tool source_tools [query]",
-            ),
-            "source_commands": ToolDefinition(
-                name="source_commands",
-                purpose="List mirrored commands loaded from kitsune/src metadata",
-                usage="/tool source_commands [query]",
-            ),
-            "source_search": ToolDefinition(
-                name="source_search",
-                purpose="Search mirrored tool and command metadata",
-                usage="/tool source_search <query>",
-            ),
-            "route": ToolDefinition(
-                name="route",
-                purpose="Route a prompt through the mirrored kitsune/src PortRuntime",
-                usage="/tool route <prompt>",
-            ),
             "claude": ToolDefinition(
                 name="claude",
                 purpose="Run safe local equivalents for selected claude-code tool names",
@@ -302,16 +169,6 @@ class LocalToolRegistry:
             lines.append(f"  {tool.usage}")
         lines.append(f"Workspace root: {self.workspace_root}")
         lines.append(f"Max send_file size: {self.max_send_file_bytes // (1024 * 1024)} MB")
-        if self.claude_source.available():
-            tool_count = len(self.claude_source.load_tools())
-            command_count = len(self.claude_source.load_commands())
-            lines.append(
-                f"Claude-code source metadata loaded: {tool_count} tools, {command_count} commands"
-            )
-        else:
-            lines.append(
-                f"Claude-code source metadata missing: {self.claude_source.reference_data_dir}"
-            )
         return "\n".join(lines)
 
     def run(self, raw_args: str) -> ToolResult:
@@ -339,14 +196,6 @@ class LocalToolRegistry:
             return self._prepare_send_file(rest, as_photo=True)
         if name == "shell":
             return self._shell(rest)
-        if name in {"source_tools", "archive_tools"}:
-            return ToolResult(True, self.claude_source.render("tools", " ".join(rest)))
-        if name in {"source_commands", "archive_commands"}:
-            return ToolResult(True, self.claude_source.render("commands", " ".join(rest)))
-        if name in {"source_search", "archive_search"}:
-            return ToolResult(True, self.claude_source.render("all", " ".join(rest)))
-        if name == "route":
-            return self._route_prompt(rest)
         if name == "claude":
             return self._run_claude_alias(rest)
 
@@ -360,11 +209,6 @@ class LocalToolRegistry:
             )
 
         source_tool, rest = args[0], args[1:]
-        known = {entry.name.lower(): entry for entry in self.claude_source.load_tools()}
-        entry = known.get(source_tool.lower())
-        if entry is None:
-            return ToolResult(False, f"Tool tidak ada di kitsune/src: {source_tool}")
-
         aliases = {
             "filereadtool": self._read_file,
             "globtool": self._list_files,
@@ -374,17 +218,10 @@ class LocalToolRegistry:
         }
         runner = aliases.get(source_tool.lower())
         if runner is None:
-            return ToolResult(
-                False,
-                (
-                    f"{entry.name} ditemukan di kitsune/src ({entry.source_hint}), "
-                    "tapi belum punya implementasi aman di Kitsune."
-                ),
-            )
+            return ToolResult(False, f"Tool tidak dikenal: {source_tool}")
 
         result = runner(rest)
-        source_note = f"[mapped from {entry.name}: {entry.source_hint}]\n"
-        return ToolResult(result.ok, source_note + result.output, result.files)
+        return ToolResult(result.ok, result.output, result.files)
 
     def _prepare_send_message_alias(self, args: list[str]) -> ToolResult:
         if args and args[0] in {"file", "document", "photo", "image"}:
@@ -394,31 +231,6 @@ class LocalToolRegistry:
             False,
             "Usage: /tool claude SendMessageTool <file|document|photo|image> <path> [caption]",
         )
-
-    def _route_prompt(self, args: list[str]) -> ToolResult:
-        if not args:
-            return ToolResult(False, "Usage: /tool route <prompt>")
-
-        prompt = " ".join(args)
-        try:
-            from kitsune.src.runtime import PortRuntime
-        except Exception as e:
-            return ToolResult(False, f"Gagal memuat kitsune/src runtime: {e}")
-
-        try:
-            matches = PortRuntime().route_prompt(prompt, limit=8)
-        except Exception as e:
-            return ToolResult(False, f"Gagal routing prompt: {e}")
-
-        if not matches:
-            return ToolResult(True, "Tidak ada route match.")
-
-        lines = ["Route matches dari kitsune/src:"]
-        lines.extend(
-            f"- [{match.kind}] {match.name} score={match.score} — {match.source_hint}"
-            for match in matches
-        )
-        return ToolResult(True, "\n".join(lines))
 
     def _list_files(self, args: list[str]) -> ToolResult:
         raw_path = args[0] if args else "."
