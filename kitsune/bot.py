@@ -337,17 +337,35 @@ class KitsuneBot:
         await self._run_local_tool(message, self._command_args(message))
 
     async def _cmd_sendfile(self, message: Message):
+        user = message.from_user
+        if not user or not self._is_message_authorized(message):
+            await self._safe_answer(message, "⛔ Maaf, kamu tidak punya akses ke bot ini.")
+            return
+        if not self.local_tools:
+            await self._safe_answer(message, "🔧 Tool lokal belum aktif. Set ENABLE_LOCAL_TOOLS=true di .env.")
+            return
+
         args = self._command_args(message)
         if not args:
             await self._safe_answer(message, "Kirim seperti ini:\n/sendfile data/report.txt caption opsional")
             return
-        await self._run_local_tool(message, f"send_file {args}")
+
+        result = self.local_tools.run(f"send_file {args}")
+        prefix = "✅" if result.ok else "❌"
+        if not result.files:
+            await self._safe_answer(message, f"{prefix}\n{result.output[:3500]}")
+            return
+
+        await self._safe_answer(message, f"{prefix}\n{result.output[:900]}")
+        for prepared_file in result.files:
+            await self._safe_send_prepared_file(message, prepared_file)
 
     async def _run_local_tool(self, message: Message, raw_args: str):
         if not self._is_owner_message(message):
+            await self._safe_answer(message, "⛔ Hanya owner yang bisa pakai tool lokal.")
             return
         if not self.local_tools:
-            await self._safe_answer(message, "Tool lokal belum aktif. Set ENABLE_LOCAL_TOOLS=true di .env.")
+            await self._safe_answer(message, "🔧 Tool lokal belum aktif. Set ENABLE_LOCAL_TOOLS=true di .env.")
             return
 
         result = self.local_tools.run(raw_args)
