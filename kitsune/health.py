@@ -189,6 +189,6 @@ class HealthMonitor:
             emoji = "🟢" if result["healthy"] else "🔴"
             lines.append(
                 f"{emoji} **{provider}**: {result['latency_ms']}ms"
-                f"{f' ({result['error']})' if result['error'] else ''}"
+                + (f" ({result['error']})" if result['error'] else "")
             )
         return "\n".join(lines)
