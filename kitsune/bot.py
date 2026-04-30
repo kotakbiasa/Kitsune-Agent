@@ -6,6 +6,7 @@ Connects all components: Router, Brain, Memory, Learner, and local tools.
 from __future__ import annotations
 
 import asyncio
+import base64
 import html
 import logging
 import re
@@ -1193,6 +1194,16 @@ class KitsuneBot:
             f"```text\n{file_context}\n```"
         )
 
+        image_base64 = None
+        image_mime = None
+        if inspection.kind == "Image":
+            try:
+                image_bytes = inspection.path.read_bytes()
+                image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+                image_mime = inspection.mime_type or "image/jpeg"
+            except Exception as e:
+                logger.warning("Failed to read image for multimodal: %s", e)
+
         try:
             await self._safe_send_chat_action(message)
             task_category, _ = await self.router.classify_task(file_prompt)
@@ -1215,6 +1226,8 @@ class KitsuneBot:
                 conversation_history=history,
                 user_name=user_name,
                 personality_context=personality_context,
+                image_base64=image_base64,
+                image_mime=image_mime,
             )
 
             # AI autonomous shell execution (owner only)

@@ -55,12 +55,14 @@ class Brain:
         conversation_history: list[dict] | None = None,
         user_name: str | None = None,
         personality_context: str = "",
+        image_base64: str | None = None,
+        image_mime: str | None = None,
     ) -> BrainResponse:
         """
         Generate a response using the specified model with memory context.
         Auto-retries with backoff, then falls back through the chain.
         """
-        messages = self._build_messages(user_message, memory_context, conversation_history, user_name, personality_context)
+        messages = self._build_messages(user_message, memory_context, conversation_history, user_name, personality_context, image_base64, image_mime)
 
         # Build candidate chain: primary + fallbacks + local Ollama safety net
         candidates = self._model_candidates(model, fallback_model)
@@ -141,9 +143,11 @@ class Brain:
         conversation_history: list[dict] | None = None,
         user_name: str | None = None,
         personality_context: str = "",
+        image_base64: str | None = None,
+        image_mime: str | None = None,
     ) -> AsyncIterator[dict]:
         """Stream response chunks, then emit a final BrainResponse event."""
-        messages = self._build_messages(user_message, memory_context, conversation_history, user_name, personality_context)
+        messages = self._build_messages(user_message, memory_context, conversation_history, user_name, personality_context, image_base64, image_mime)
 
         # Build candidate chain: primary + fallbacks + local Ollama safety net
         candidates = self._model_candidates(model, fallback_model)
@@ -235,6 +239,8 @@ class Brain:
         conversation_history: list[dict] | None = None,
         user_name: str | None = None,
         personality_context: str = "",
+        image_base64: str | None = None,
+        image_mime: str | None = None,
     ) -> list[dict]:
         system_prompt = self.config.prompt_templates.get(
             "system_prompt",
@@ -253,7 +259,15 @@ class Brain:
         messages = [{"role": "system", "content": system_prompt}]
         if conversation_history:
             messages.extend(conversation_history[-6:])
-        messages.append({"role": "user", "content": user_message})
+
+        if image_base64:
+            content: list[dict] | str = [
+                {"type": "text", "text": user_message},
+                {"type": "image_url", "image_url": {"url": f"data:{image_mime or 'image/jpeg'};base64,{image_base64}"}},
+            ]
+        else:
+            content = user_message
+        messages.append({"role": "user", "content": content})
         return messages
 
     @staticmethod
@@ -425,6 +439,32 @@ class Brain:
             logger.debug("Memory extraction failed (non-critical): %s", e)
             return []
 
+    @staticmethod
+    def _normalize_messages_for_ollama(messages: list[dict]) -> list[dict]:
+        """Convert LiteLLM multimodal format to Ollama native format."""
+        if not messages:
+            return messages
+        normalized = list(messages)
+        last = normalized[-1]
+        if last.get("role") == "user" and isinstance(last.get("content"), list):
+            text_parts = []
+            images = []
+            for part in last["content"]:
+                if part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+                elif part.get("type") == "image_url":
+                    url = part.get("image_url", {}).get("url", "")
+                    if url.startswith("data:") and ";base64," in url:
+                        images.append(url.split(";base64,", 1)[1])
+                    elif url:
+                        images.append(url)
+            normalized[-1] = {
+                "role": "user",
+                "content": "\n".join(text_parts),
+                "images": images,
+            }
+        return normalized
+
     async def _ollama_chat(self, model: str, messages: list[dict]) -> tuple[str, int, float]:
         """Call Ollama's hosted API. The official client appends /api internally."""
         if not self.config.ollama_api_key:
@@ -437,7 +477,7 @@ class Brain:
             )
             response = client.chat(
                 model=model,
-                messages=messages,
+                messages=self._normalize_messages_for_ollama(messages),
                 options={"temperature": 0.7, "num_predict": 4096},
             )
             message = response.get("message", {}) if hasattr(response, "get") else getattr(response, "message", {})
@@ -486,7 +526,7 @@ class Brain:
                 token_count = 0
                 for chunk in client.chat(
                     model=model,
-                    messages=messages,
+                    messages=self._normalize_messages_for_ollama(messages),
                     stream=True,
                     options={"temperature": 0.7, "num_predict": 4096},
                 ):
