@@ -1620,16 +1620,23 @@ class KitsuneBot:
         if len(chunks) == 1 and len(chunks[0]) + len(footer) <= 4096:
             reply_text = chunks[0] + footer
             if stream_message:
+                edited = False
                 try:
                     await stream_message.edit_text(
                         text=reply_text,
                         parse_mode=ParseMode.MARKDOWN,
                         reply_markup=keyboard,
                     )
+                    edited = True
                 except TelegramBadRequest:
-                    await self._safe_edit_text(stream_message, reply_text, reply_markup=keyboard)
-                self._try_register_feedback_meta(stream_message, message, response, task_category, interaction_id)
-                return
+                    edited = await self._safe_edit_text(stream_message, reply_text, reply_markup=keyboard)
+                if edited:
+                    self._try_register_feedback_meta(stream_message, message, response, task_category, interaction_id)
+                    return
+                try:
+                    await stream_message.delete()
+                except Exception:
+                    pass
 
             sent = await self._safe_answer(message, reply_text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard, **reply_kwargs)
             self._try_register_feedback_meta(sent, message, response, task_category, interaction_id)
@@ -2179,16 +2186,24 @@ class KitsuneBot:
         if len(chunks) == 1 and len(chunks[0]) + len(footer) <= 4096:
             reply_text = chunks[0] + footer
             if stream_message:
+                edited = False
                 try:
                     await stream_message.edit_text(
                         text=reply_text,
                         parse_mode=ParseMode.MARKDOWN,
                         reply_markup=keyboard,
                     )
+                    edited = True
                 except TelegramBadRequest:
-                    await self._safe_edit_text(stream_message, reply_text, reply_markup=keyboard)
-                self._try_register_feedback_meta(stream_message, message, response, task_category, interaction_id)
-                return
+                    edited = await self._safe_edit_text(stream_message, reply_text, reply_markup=keyboard)
+                if edited:
+                    self._try_register_feedback_meta(stream_message, message, response, task_category, interaction_id)
+                    return
+                # Edit failed — delete stream msg and fall through to send fresh
+                try:
+                    await stream_message.delete()
+                except Exception:
+                    pass
 
             sent = await self._safe_answer(message, reply_text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
             self._try_register_feedback_meta(sent, message, response, task_category, interaction_id)
