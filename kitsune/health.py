@@ -134,16 +134,31 @@ class HealthMonitor:
                 await asyncio.wait_for(asyncio.to_thread(_ping), timeout=15)
                 return True, time.time() - start, None
             else:
-                # Cloud provider: send a minimal completion
-                response = await asyncio.wait_for(
-                    litellm.acompletion(
-                        model=model,
-                        messages=[{"role": "user", "content": "ping"}],
-                        max_tokens=1,
-                        temperature=0.0,
-                    ),
-                    timeout=15,
-                )
+                if provider == "custom_codex":
+                    if not self.config.custom_codex_base_url or not self.config.custom_codex_api_key:
+                        return False, 0.0, "No CUSTOM_CODEX_BASE_URL or CUSTOM_CODEX_API_KEY"
+                    response = await asyncio.wait_for(
+                        litellm.acompletion(
+                            model=f"openai/{self.config.custom_codex_model}",
+                            messages=[{"role": "user", "content": "ping"}],
+                            max_tokens=1,
+                            temperature=0.0,
+                            api_base=self.config.custom_codex_base_url,
+                            api_key=self.config.custom_codex_api_key,
+                        ),
+                        timeout=15,
+                    )
+                else:
+                    # Cloud provider: send a minimal completion
+                    response = await asyncio.wait_for(
+                        litellm.acompletion(
+                            model=model,
+                            messages=[{"role": "user", "content": "ping"}],
+                            max_tokens=1,
+                            temperature=0.0,
+                        ),
+                        timeout=15,
+                    )
                 # Verify we got a non-empty response
                 if response.choices and response.choices[0].message.content is not None:
                     return True, time.time() - start, None
