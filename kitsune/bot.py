@@ -544,6 +544,39 @@ class KitsuneBot:
             return
         await self._safe_answer(message, self.health_monitor.get_summary(), parse_mode=ParseMode.MARKDOWN)
 
+    async def _cmd_backup(self, message: Message):
+        if not self._is_owner_message(message):
+            return
+        try:
+            self.backup._backup_now()
+            backups = self.backup.get_backups()
+            latest = backups[0].name if backups else "none"
+            await self._safe_answer(
+                message,
+                f"✅ Backup selesai!\nFile terbaru: `{latest}`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            logger.error("Manual backup failed: %s", e)
+            await self._safe_answer(message, f"❌ Backup gagal: {str(e)[:200]}")
+
+    async def _cmd_backups(self, message: Message):
+        if not self._is_owner_message(message):
+            return
+        try:
+            backups = self.backup.get_backups()
+            if not backups:
+                await self._safe_answer(message, "Belum ada backup.")
+                return
+            lines = ["📦 **Backup tersedia:**"]
+            for i, path in enumerate(backups[:10], 1):
+                size_mb = path.stat().st_size / (1024 * 1024)
+                lines.append(f"{i}. `{path.name}` ({size_mb:.2f} MB)")
+            await self._safe_answer(message, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error("List backups failed: %s", e)
+            await self._safe_answer(message, f"❌ Gagal list backup: {str(e)[:200]}")
+
     async def _cmd_whoami(self, message: Message):
         user = message.from_user
         if not user or not self._is_message_authorized(message):
