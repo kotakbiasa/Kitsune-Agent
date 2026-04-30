@@ -1157,6 +1157,15 @@ class KitsuneBot:
             await self._answer_from_uploaded_file(message, inspection, caption)
             return
 
+        # For images and other non-text files, send file info + caption to AI
+        if inspection.kind == "Image" or caption:
+            await self._answer_from_uploaded_file(
+                message,
+                inspection,
+                caption or "Tolong analisis atau berikan respons tentang file ini.",
+            )
+            return
+
         await self._safe_answer(message, self._telegram_text_limit(inspection.render()))
 
     def _get_user_name(self, user_id: int) -> str | None:
