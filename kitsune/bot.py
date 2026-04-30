@@ -1609,9 +1609,13 @@ class KitsuneBot:
         keyboard = self._build_feedback_keyboard()
 
         stream_message = getattr(response, "_telegram_message", None)
+        is_draft = getattr(response, "_is_draft", False)
         chunks = self._split_text(response.content, 4096)
 
         reply_kwargs = {"reply_to_message_id": message.message_id}
+
+        if is_draft:
+            stream_message = None
 
         if len(chunks) == 1 and len(chunks[0]) + len(footer) <= 4096:
             reply_text = chunks[0] + footer
@@ -1631,16 +1635,15 @@ class KitsuneBot:
             self._try_register_feedback_meta(sent, message, response, task_category, interaction_id)
             return
 
-        # Multi-chunk: send chunks 1..N-1 plain, last chunk with footer + keyboard
-        if stream_message:
+        # Multi-chunk: delete stream message and send all chunks fresh
+        if stream_message and len(chunks) > 1:
             try:
-                await stream_message.edit_text(text=chunks[0], parse_mode=ParseMode.MARKDOWN)
-            except TelegramBadRequest:
-                await self._safe_edit_text(stream_message, chunks[0])
+                await stream_message.delete()
+            except Exception:
+                pass
+            stream_message = None
 
         for idx, chunk in enumerate(chunks):
-            if stream_message and idx == 0:
-                continue
             is_last = idx == len(chunks) - 1
             text = chunk + footer if is_last else chunk
             markup = keyboard if is_last else None
@@ -2083,7 +2086,12 @@ class KitsuneBot:
                     now - last_edit_at >= self.config.stream_edit_interval
                     and len(content) - last_edit_len >= self.config.stream_min_chars
                 ):
-                    if await self._safe_edit_text(stream_message, self._stream_preview(content)):
+                    preview = self._stream_preview(content)
+                    # Try with markdown first, fallback to plain text if invalid
+                    ok = await self._safe_edit_text(stream_message, preview, parse_mode=ParseMode.MARKDOWN)
+                    if not ok:
+                        ok = await self._safe_edit_text(stream_message, preview)
+                    if ok:
                         last_edit_at = now
                         last_edit_len = len(content)
             elif event.get("type") == "final":
@@ -2135,6 +2143,17 @@ class KitsuneBot:
             elif event.get("type") == "final":
                 final_response = event["response"]
 
+        if final_response is None:
+            return None
+
+        # Clear the draft by sending empty draft
+        try:
+            await self._safe_send_message_draft(chat_id, draft_id, "")
+        except Exception:
+            pass
+
+        # Mark as draft so _send_or_finalize_response knows to send fresh
+        final_response._is_draft = True  # type: ignore[attr-defined]
         return final_response
 
     async def _send_or_finalize_response(
@@ -2149,9 +2168,14 @@ class KitsuneBot:
         keyboard = self._build_feedback_keyboard()
 
         stream_message = getattr(response, "_telegram_message", None)
+        is_draft = getattr(response, "_is_draft", False)
         chunks = self._split_text(response.content, 4096)
 
-        # If single chunk + footer still fits, send normally
+        # If draft mode: always send fresh (draft was cleared earlier)
+        if is_draft:
+            stream_message = None
+
+        # Single chunk: edit stream message if possible
         if len(chunks) == 1 and len(chunks[0]) + len(footer) <= 4096:
             reply_text = chunks[0] + footer
             if stream_message:
@@ -2170,21 +2194,25 @@ class KitsuneBot:
             self._try_register_feedback_meta(sent, message, response, task_category, interaction_id)
             return
 
-        # Multi-chunk: send chunks 1..N-1 plain, last chunk with footer + keyboard
-        if stream_message:
-            # Edit stream message to first chunk
+        # Multi-chunk: if we have a stream message, delete it and send all chunks fresh
+        # to avoid showing the full streamed content then a chopped version
+        if stream_message and len(chunks) > 1:
             try:
-                await stream_message.edit_text(text=chunks[0], parse_mode=ParseMode.MARKDOWN)
-            except TelegramBadRequest:
-                await self._safe_edit_text(stream_message, chunks[0])
+                await stream_message.delete()
+            except Exception:
+                pass
+            stream_message = None
 
         for idx, chunk in enumerate(chunks):
-            if stream_message and idx == 0:
-                continue  # Already handled above
             is_last = idx == len(chunks) - 1
             text = chunk + footer if is_last else chunk
             markup = keyboard if is_last else None
-            sent = await self._safe_answer(message, text, parse_mode=ParseMode.MARKDOWN if not is_last else None, reply_markup=markup)
+            sent = await self._safe_answer(
+                message,
+                text,
+                parse_mode=ParseMode.MARKDOWN if not is_last else None,
+                reply_markup=markup,
+            )
             if is_last:
                 self._try_register_feedback_meta(sent, message, response, task_category, interaction_id)
 

@@ -168,7 +168,7 @@ class Config:
             "yes",
             "on",
         }
-        self.telegram_stream_mode = os.getenv("TELEGRAM_STREAM_MODE", "draft").strip().lower()
+        self.telegram_stream_mode = os.getenv("TELEGRAM_STREAM_MODE", "edit").strip().lower()
         self.stream_edit_interval = max(1.0, self._env_float("STREAM_EDIT_INTERVAL", 1.0))
         self.stream_min_chars = max(12, int(self._env_float("STREAM_MIN_CHARS", 12.0)))
         self.telegram_chat_action_interval = max(
