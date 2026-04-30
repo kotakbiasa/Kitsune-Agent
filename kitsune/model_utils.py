@@ -22,7 +22,7 @@ USE_CASE_MODELS = {
         "custom_codex": "custom_codex/codex",
         "anthropic": "anthropic/claude-opus-4-6-20251001",
         "openai": "openai/gpt-5.4",
-        "ollama": "ollama/deepseek-v3-2-volc",
+        "ollama": "ollama/kimi-k2.6:cloud",
         "openrouter": "openrouter/deepseek/deepseek-v3-2-volc",
         "gemini": "gemini/gemini-2.5-pro-002",
     },
@@ -52,11 +52,11 @@ USE_CASE_MODELS = {
     },
     "long_context": {
         "custom_codex": "custom_codex/codex",
+        "ollama": "ollama/kimi-k2.6:cloud",
         "openrouter": "openrouter/kimi/kimi-k2.5",
         "gemini": "gemini/gemini-2.5-pro-002",
         "anthropic": "anthropic/claude-opus-4-6-20251001",
         "openai": "openai/gpt-5.4",
-        "ollama": "ollama/gemma4:31b-cloud",
     },
     "math": {
         "custom_codex": "custom_codex/codex",
@@ -147,6 +147,10 @@ MODEL_ALIASES: dict[str, str] = {
     "kimi": "openrouter/kimi/kimi-k2.5",
     "kimi-k2.5": "openrouter/kimi/kimi-k2.5",
     "kimi k2.5": "openrouter/kimi/kimi-k2.5",
+    "kimi-k2.6": "ollama/kimi-k2.6:cloud",
+    "kimi k2.6": "ollama/kimi-k2.6:cloud",
+    "kimi-k2.6:cloud": "ollama/kimi-k2.6:cloud",
+    "kimi cloud": "ollama/kimi-k2.6:cloud",
     "glm": "openrouter/thudm/glm-4-9b",  # Best-effort; not in current pool
     # Ollama models (local)
     "deepseek": "ollama/deepseek-v3-2-volc",
@@ -198,6 +202,7 @@ def get_model_info(model: str) -> dict:
         "gemini-2.5-pro": {"name": "Gemini 2.5 Pro", "use": "Multimodal / Long Context", "provider": "Gemini"},
         "gemini-3.1-pro": {"name": "Gemini 3.1 Pro", "use": "Multimodal", "provider": "Gemini"},
         "kimi-k2.5": {"name": "Kimi k2.5", "use": "Long Context (200K)", "provider": "OpenRouter"},
+        "kimi-k2.6": {"name": "Kimi k2.6 Cloud", "use": "Long Context / Reasoning", "provider": "Ollama"},
     }
 
     for key, value in info_map.items():
