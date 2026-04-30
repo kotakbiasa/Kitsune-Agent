@@ -1537,7 +1537,14 @@ class KitsuneBot:
     ):
         model_short = response.model_used.split("/")[-1] if "/" in response.model_used else response.model_used
         footer = f"\n\n`🤖 {model_short} | 📋 {task_category} | ⏱ {response.response_time}s`"
-        reply_text = response.content + footer
+
+        # Telegram message limit is 4096 chars. Reserve space for footer + truncation notice.
+        max_content_len = 4096 - len(footer) - 24
+        content = response.content
+        if len(content) > max_content_len:
+            content = content[: max_content_len - 3] + "..."
+
+        reply_text = content + footer
         keyboard = self._build_feedback_keyboard()
 
         stream_message = getattr(response, "_telegram_message", None)
@@ -1606,6 +1613,18 @@ class KitsuneBot:
     async def _safe_answer(self, message: Message, text: str, **kwargs):
         try:
             return await message.answer(text, **kwargs)
+        except TelegramBadRequest as e:
+            # Fallback: if parse_mode or markdown failed, retry plain text
+            if kwargs.get("parse_mode"):
+                logger.warning("Telegram answer with parse_mode failed: %s", e)
+                kwargs.pop("parse_mode", None)
+                try:
+                    return await message.answer(text, **kwargs)
+                except (TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter) as e2:
+                    logger.warning("Telegram plain answer fallback failed: %s", e2)
+                    return None
+            logger.warning("Telegram answer failed: %s", e)
+            return None
         except (TelegramNetworkError, TelegramRetryAfter) as e:
             logger.warning("Telegram answer failed: %s", e)
             return None
