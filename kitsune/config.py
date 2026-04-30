@@ -232,6 +232,16 @@ class Config:
         }
         self.self_improve_dir = SELF_IMPROVE_DIR
 
+        # --- AI autonomous shell ---
+        self.enable_ai_shell = os.getenv("ENABLE_AI_SHELL", "true").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self.ai_shell_timeout = max(5, min(int(self._env_float("AI_SHELL_TIMEOUT", 15.0)), 60))
+        self.ai_shell_max_output = max(500, min(int(self._env_float("AI_SHELL_MAX_OUTPUT", 4000.0)), 10000))
+
         # --- Dynamic config ---
         self._routing_rules = None
         self._prompt_templates = None
@@ -495,7 +505,12 @@ DEFAULT_PROMPT_TEMPLATES = {
         "Gunakan memori pengguna hanya jika relevan, jangan mengarang memori yang tidak ada, "
         "dan jangan menyebut detail memori secara eksplisit kecuali memang membantu jawaban. "
         "Kalau kamu tidak tahu sesuatu, akui dengan jujur sambil tetap cute — jangan bikin-bikin jawaban! "
-        "Tetap berikan jawaban yang bermanfaat, detail, dan tidak bertele-tele."
+        "Tetap berikan jawaban yang bermanfaat, detail, dan tidak bertele-tele.\n\n"
+        "[SHELL TOOL] Kamu punya akses ke sistem file server ini. "
+        "Kalau user minta info sistem atau kamu butuh cek file/logs/disk, kamu BISA jalankan perintah shell. "
+        "Format: tulis [[shell:perintah]] di responsmu — contoh: [[shell:df -h]] atau [[shell:ls -la]]. "
+        "Bot akan mengeksekusi perintah itu dan hasilnya akan dikembalikan ke kamu untuk dijawab ke user. "
+        "Hanya gunakan shell kalau benar-benar perlu, jangan asal-asalan!"
     ),
     "classifier_prompt": (
         "Classify the following user message into exactly ONE category. "

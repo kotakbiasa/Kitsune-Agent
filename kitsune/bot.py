@@ -9,6 +9,7 @@ import asyncio
 import html
 import logging
 import re
+import subprocess
 import time
 import traceback
 import uuid
@@ -1138,6 +1139,19 @@ class KitsuneBot:
                 personality_context=personality_context,
             )
 
+            # AI autonomous shell execution (owner only)
+            if self._is_owner(user.id) and "[[shell:" in response.content:
+                response = await self._process_ai_shell_commands(
+                    response=response,
+                    user_message=file_prompt,
+                    model=primary_model,
+                    fallback_model=fallback_model,
+                    memory_context=memory_context,
+                    conversation_history=history,
+                    user_name=user_name,
+                    personality_context=personality_context,
+                )
+
             self._chat_history.setdefault(hist_key, [])
             self._chat_history[hist_key].append({"role": "user", "content": f"[file] {inspection.display_path}\n{request}"})
             self._chat_history[hist_key].append({"role": "assistant", "content": response.content})
@@ -1338,6 +1352,19 @@ class KitsuneBot:
                     personality_context=personality_context,
                 )
 
+            # AI autonomous shell execution (owner only)
+            if self._is_owner(user.id) and "[[shell:" in response.content:
+                response = await self._process_ai_shell_commands(
+                    response=response,
+                    user_message=text,
+                    model=primary_model,
+                    fallback_model=fallback_model,
+                    memory_context=memory_context,
+                    conversation_history=history,
+                    user_name=user_name,
+                    personality_context=personality_context,
+                )
+
             self._chat_history.setdefault(hist_key, [])
             self._chat_history[hist_key].append({"role": "user", "content": text})
             self._chat_history[hist_key].append({"role": "assistant", "content": response.content})
@@ -1470,6 +1497,19 @@ class KitsuneBot:
                 )
             else:
                 response = await self.brain.think(
+                    user_message=extracted_text,
+                    model=primary_model,
+                    fallback_model=fallback_model,
+                    memory_context=memory_context,
+                    conversation_history=history,
+                    user_name=user_name,
+                    personality_context=personality_context,
+                )
+
+            # AI autonomous shell execution (owner only)
+            if self._is_owner(user.id) and "[[shell:" in response.content:
+                response = await self._process_ai_shell_commands(
+                    response=response,
                     user_message=extracted_text,
                     model=primary_model,
                     fallback_model=fallback_model,
@@ -2147,6 +2187,132 @@ class KitsuneBot:
             logger.warning("Telegram file send failed: %s", e)
             await self._safe_answer(message, f"ERROR\nGagal mengirim {prepared_file.display_path}: {e}")
             return False
+
+    # ---- AI Autonomous Shell ----
+
+    _SHELL_PATTERN = re.compile(r"\[\[shell:(.+?)\]\]", re.DOTALL)
+
+    _AI_SHELL_BLOCKED = {
+        "rm ", "rm -", "mv ", "chmod ", "chown ", "mkfs", "dd ",
+        "git reset", "git checkout", "shutdown", "reboot", ":(){",
+        "> /dev", "| sh", "| bash", "curl ", "wget ", "nc ", "ncat ",
+        "python -c", "python3 -c", "perl -e", "ruby -e",
+    }
+
+    _AI_SHELL_ALLOWED_PREFIXES = (
+        "ls", "cat", "pwd", "df", "du", "ps", "top", "free", "uptime",
+        "whoami", "uname", "date", "echo", "head", "tail", "grep",
+        "find", "wc", "sort", "uniq", "git status", "git log", "git diff",
+        "git branch", "python -m py_compile", "pip list", "pip freeze",
+        "nvidia-smi", "systemctl status", "journalctl", "docker ps",
+        "docker images", "docker-compose ps", "netstat", "ss -tlnp",
+    )
+
+    def _is_ai_shell_safe(self, command: str) -> bool:
+        lowered = command.lower().strip()
+        if any(b in lowered for b in self._AI_SHELL_BLOCKED):
+            return False
+        if not any(lowered.startswith(p.lower()) for p in self._AI_SHELL_ALLOWED_PREFIXES):
+            return False
+        return True
+
+    def _execute_ai_shell(self, command: str) -> tuple[bool, str]:
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=Path(__file__).parent.parent,
+                shell=True,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=self.config.ai_shell_timeout,
+            )
+            output = completed.stdout.strip()[:self.config.ai_shell_max_output]
+            return completed.returncode == 0, output or "(no output)"
+        except subprocess.TimeoutExpired:
+            return False, f"Command timed out after {self.config.ai_shell_timeout}s"
+        except OSError as e:
+            return False, f"Failed to run command: {e}"
+
+    async def _process_ai_shell_commands(
+        self,
+        response: BrainResponse,
+        user_message: str,
+        model: str,
+        fallback_model: list[str],
+        memory_context: str,
+        conversation_history: list[dict],
+        user_name: str | None,
+        personality_context: str,
+    ) -> BrainResponse:
+        """Detect [[shell:cmd]] in AI response, execute, and feed result back."""
+        if not self.config.enable_ai_shell:
+            return response
+
+        matches = self._SHELL_PATTERN.findall(response.content)
+        if not matches:
+            return response
+
+        # Only allow 1 shell round per message to prevent loops
+        command = matches[0].strip()
+        if not self._is_ai_shell_safe(command):
+            logger.warning("AI shell command blocked: %s", command[:100])
+            cleaned = self._SHELL_PATTERN.sub(
+                f"\n[Shell ditolak: command tidak aman]\n",
+                response.content,
+                count=1,
+            )
+            return BrainResponse(
+                content=cleaned,
+                model_used=response.model_used,
+                response_time=response.response_time,
+                tokens_used=response.tokens_used,
+                cost_estimate=response.cost_estimate,
+                success=response.success,
+            )
+
+        logger.info("🖥️ AI shell executing: %s", command[:120])
+        ok, output = self._execute_ai_shell(command)
+        status = "✅" if ok else "❌"
+        result_block = f"\n\n[SHELL RESULT {status}]\n```\n{output}\n```\n"
+
+        # Build follow-up prompt
+        follow_up = (
+            f"User: {user_message}\n"
+            f"You ran: [[shell:{command}]]\n"
+            f"Result:\n{output}\n\n"
+            f"Now answer the user naturally based on this result."
+        )
+
+        follow_history = (conversation_history or []) + [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": response.content + result_block},
+            {"role": "user", "content": "Please answer based on the shell result above."},
+        ]
+
+        final = await self.brain.think(
+            user_message=follow_up,
+            model=model,
+            fallback_model=fallback_model,
+            memory_context=memory_context,
+            conversation_history=follow_history[-10:],
+            user_name=user_name,
+            personality_context=personality_context,
+        )
+
+        # Preserve original model attribution but add shell indicator
+        final_content = final.content
+        if ok:
+            final_content = f"{final_content}\n\n`🖥️ shell: {command[:40]}{'...' if len(command) > 40 else ''}`"
+        return BrainResponse(
+            content=final_content,
+            model_used=final.model_used,
+            response_time=round(response.response_time + final.response_time, 2),
+            tokens_used=response.tokens_used + final.tokens_used,
+            cost_estimate=round(response.cost_estimate + final.cost_estimate, 4),
+            success=final.success,
+        )
 
     async def _safe_answer(self, message: Message, text: str, **kwargs):
         try:
