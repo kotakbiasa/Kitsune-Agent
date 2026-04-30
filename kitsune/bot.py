@@ -27,6 +27,7 @@ from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, Inli
 
 from kitsune.brain import Brain, BrainResponse
 from kitsune.config import Config
+from kitsune.health import HealthMonitor
 from kitsune.learner import Learner
 from kitsune.memory import MemorySystem
 from kitsune.reminder import ReminderSystem
@@ -90,10 +91,22 @@ class KitsuneBot:
             callback=self._on_reminder_trigger,
         )
 
+        self.health_monitor = HealthMonitor(config, router=self.router)
+
         self._chat_history: dict[tuple[int, int], list[dict]] = {}
         self._draft_retry_until: dict[int, float] = {}
         self._last_chat_action_at: dict[tuple[int, str], float] = {}
         self._feedback_registry: dict[int, _FeedbackMeta] = {}
+
+        # Implicit negative feedback tracking
+        self._last_user_message: dict[int, str] = {}  # user_id -> last message text
+        self._last_response_meta: dict[int, dict] = {}  # user_id -> {model, category, response_text, timestamp}
+        self._implicit_negative_keywords = (
+            r"\b(salah|ngawur|gak jelas|tidak jelas|ngaco|bodoh|stupid|nonsense|wrong|incorrect|bad|terrible|awful|useless|ga bisa|gak bisa|tidak bisa|gagal|failed|rusak|broken)\b",
+            r"\b(bukan itu|bukan gitu|not that|not what i|bukan yang|kurang|kurang tepat|kurang baik|not good|not helpful|tidak membantu)\b",
+            r"\b(ulangi|repeat|coba lagi|try again|sekali lagi|once more)\b",
+            r"\b(apa ini|what is this|apa maksud|what do you mean|ngomong apa|talking about)\b",
+        )
 
         self.bot: Bot | None = None
         self.dp: Dispatcher | None = None
@@ -119,6 +132,10 @@ class KitsuneBot:
 
         self.reminders.start()
         logger.info("⏰ Reminder scheduler started.")
+
+        self.health_monitor.start()
+        logger.info("🏥 Health monitor started.")
+
         logger.info("🚀 Kitsune Bot is ready! Listening for messages...")
         await self.dp.start_polling(
             self.bot,
@@ -142,6 +159,7 @@ class KitsuneBot:
         router.message.register(self._cmd_access, Command("access"))
         router.message.register(self._cmd_improve, Command("improve"))
         router.message.register(self._cmd_improvements, Command("improvements"))
+        router.message.register(self._cmd_health, Command("health"))
         router.message.register(self._cmd_whoami, Command("whoami"))
         router.message.register(self._cmd_intro, Command("intro"))
         router.message.register(self._cmd_config, Command("config"))
@@ -483,6 +501,11 @@ class KitsuneBot:
         for idx, path in enumerate(proposals, start=1):
             lines.append(f"{idx}. `{path.relative_to(base_dir)}`")
         await self._safe_answer(message, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+    async def _cmd_health(self, message: Message):
+        if not self._is_owner_message(message):
+            return
+        await self._safe_answer(message, self.health_monitor.get_summary(), parse_mode=ParseMode.MARKDOWN)
 
     async def _cmd_whoami(self, message: Message):
         user = message.from_user
@@ -1092,6 +1115,15 @@ class KitsuneBot:
 
             await self._send_or_finalize_response(message, response, task_category, interaction_id)
 
+            # Store response metadata for implicit feedback detection
+            self._store_response_meta(
+                user_id=user.id,
+                model_used=response.model_used,
+                task_category=task_category,
+                response_text=response.content,
+                response_time=response.response_time,
+            )
+
             learning_args = dict(
                 user_id=user.id,
                 user_message=f"[uploaded_file] {inspection.display_path}\n{request}\n{file_context[:1200]}",
@@ -1101,6 +1133,7 @@ class KitsuneBot:
                 response_time=response.response_time,
                 response_success=self.learner.assess_response_success(response.content, response.success),
                 interaction_id=interaction_id,
+                error_type=response.error_type,
             )
             if self.config.background_learning:
                 asyncio.create_task(self._learn_after_response(**learning_args))
@@ -1127,6 +1160,14 @@ class KitsuneBot:
         text = message.text or ""
         if not text.strip():
             return
+
+        # Check implicit negative feedback from previous interaction
+        if await self._check_implicit_signals(user.id, text):
+            # Still continue processing the new message, but feedback was recorded
+            pass
+
+        # Store current message for future similarity checks
+        self._last_user_message[user.id] = text
 
         interaction_id = f"int_{uuid.uuid4().hex[:12]}"
         hist_key = self._history_key(message)
@@ -1216,6 +1257,15 @@ class KitsuneBot:
 
             await self._send_or_finalize_response(message, response, task_category, interaction_id)
 
+            # Store response metadata for implicit feedback detection
+            self._store_response_meta(
+                user_id=user.id,
+                model_used=response.model_used,
+                task_category=task_category,
+                response_text=response.content,
+                response_time=response.response_time,
+            )
+
             # Detect if user shared profile info and acknowledge
             await self._maybe_acknowledge_learned_profile(message, text)
 
@@ -1228,6 +1278,7 @@ class KitsuneBot:
                 response_time=response.response_time,
                 response_success=self.learner.assess_response_success(response.content, response.success),
                 interaction_id=interaction_id,
+                error_type=response.error_type,
             )
             if self.config.background_learning:
                 asyncio.create_task(self._learn_after_response(**learning_args))
@@ -1257,6 +1308,106 @@ class KitsuneBot:
     async def _error_handler(self, event):
         logger.error("Unhandled aiogram exception: %s", event.exception, exc_info=event.exception)
 
+    # ---- Implicit Negative Feedback ----
+
+    def _store_response_meta(self, user_id: int, model_used: str, task_category: str, response_text: str, response_time: float):
+        """Store metadata of the last response for implicit feedback detection."""
+        self._last_response_meta[user_id] = {
+            "model_used": model_used,
+            "task_category": task_category,
+            "response_text": response_text,
+            "timestamp": time.time(),
+            "response_time": response_time,
+        }
+
+    async def _check_implicit_signals(self, user_id: int, user_message: str) -> bool:
+        """
+        Detect implicit negative signals from user message.
+        Returns True if negative feedback was recorded.
+        """
+        text_lower = user_message.lower().strip()
+        if len(text_lower) < 2:
+            return False
+
+        meta = self._last_response_meta.get(user_id)
+        if not meta:
+            return False
+
+        signals: list[str] = []
+
+        # Signal 1: Repeated message (user sends same/similar message again within 60s)
+        last_msg = self._last_user_message.get(user_id, "")
+        if last_msg and self._text_similarity(last_msg, user_message) > 0.75:
+            time_since = time.time() - meta.get("timestamp", 0)
+            if time_since < 60:
+                signals.append(f"repeated_message ({time_since:.0f}s)")
+
+        # Signal 2: Negative keywords
+        for pattern in self._implicit_negative_keywords:
+            if re.search(pattern, text_lower):
+                signals.append("negative_keyword")
+                break
+
+        # Signal 3: Very slow response (> 60s) + short follow-up
+        if meta.get("response_time", 0) > 60 and len(user_message) < 30:
+            signals.append("slow_response_short_followup")
+
+        # Signal 4: Very short or substance-less bot response
+        response_text = meta.get("response_text", "")
+        if len(response_text.strip()) < 30:
+            signals.append("very_short_response")
+
+        # Signal 5: User asks for retry/repeat explicitly
+        if re.search(r"\b(ulangi|coba lagi|repeat|try again|sekali lagi)\b", text_lower):
+            signals.append("explicit_retry_request")
+
+        if not signals:
+            return False
+
+        logger.info(
+            "🟡 Implicit negative signals detected for user %d: %s",
+            user_id,
+            ", ".join(signals),
+        )
+
+        # Record negative feedback through learner and self-improver
+        try:
+            await self.learner.process_feedback(
+                user_id=user_id,
+                interaction_id=None,
+                feedback="negative",
+                task_category=meta["task_category"],
+                model_used=meta["model_used"],
+            )
+        except Exception as e:
+            logger.debug("Implicit feedback learner recording failed: %s", e)
+
+        if self.self_improver:
+            try:
+                self.self_improver.record_negative_feedback(
+                    user_id=user_id,
+                    user_message=self._last_user_message.get(user_id, ""),
+                    bot_response=response_text,
+                    task_category=meta["task_category"],
+                    model_used=meta["model_used"],
+                )
+                logger.info("📝 Auto-generated improvement proposal from implicit signals")
+            except Exception as e:
+                logger.debug("Implicit feedback self-improver recording failed: %s", e)
+
+        return True
+
+    @staticmethod
+    def _text_similarity(a: str, b: str) -> float:
+        """Simple Jaccard similarity for repeated message detection."""
+        set_a = set(a.lower().split())
+        set_b = set(b.lower().split())
+        if not set_a or not set_b:
+            return 0.0
+        intersection = len(set_a & set_b)
+        union = len(set_a | set_b)
+        return intersection / union if union else 0.0
+
     async def _learn_after_response(
         self,
         user_id: int,
@@ -1267,6 +1418,7 @@ class KitsuneBot:
         response_time: float,
         response_success: bool = True,
         interaction_id: str | None = None,
+        error_type: str | None = None,
     ):
         try:
             await self.learner.learn_from_interaction(
@@ -1278,6 +1430,7 @@ class KitsuneBot:
                 response_time=response_time,
                 response_success=response_success,
                 interaction_id=interaction_id,
+                error_type=error_type,
             )
         except Exception as e:
             logger.warning("Background learning failed: %s", e, exc_info=True)

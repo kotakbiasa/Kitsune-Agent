@@ -52,6 +52,7 @@ class Learner:
         response_time: float,
         response_success: bool = True,
         interaction_id: str | None = None,
+        error_type: str | None = None,
     ) -> str | None:
         """
         Process an interaction and extract learnings.
@@ -76,6 +77,7 @@ class Learner:
             model_used=model_used,
             success=response_success,
             response_time=response_time,
+            error_type=error_type,
         )
         self._append_memory_markdown(
             "interaction",

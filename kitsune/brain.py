@@ -34,6 +34,7 @@ class BrainResponse:
     cost_estimate: float
     success: bool
     error: str | None = None
+    error_type: str | None = None  # rate_limit, timeout, context_length, auth_failed, content_policy, unknown
 
 
 class Brain:
@@ -56,42 +57,32 @@ class Brain:
     ) -> BrainResponse:
         """
         Generate a response using the specified model with memory context.
-        Falls back to fallback_model if primary fails.
+        Auto-retries with backoff, then falls back through the chain.
         """
         messages = self._build_messages(user_message, memory_context, conversation_history, user_name)
 
-        # Try primary model, then fallback
+        # Build candidate chain: primary + fallbacks + local Ollama safety net
         candidates = self._model_candidates(model, fallback_model)
+        # If no Ollama candidate present but Ollama is configured, append a fast local model
+        if self.config.ollama_api_key and not any(c.startswith("ollama/") for c in candidates if c):
+            fast_local = getattr(self.config, "ollama_default_model", "ministral-3:3b-cloud")
+            candidates.append(f"ollama/{fast_local}")
+
+        last_error: Exception | None = None
         for i, current_model in enumerate(candidates):
             if not current_model:
                 continue
 
+            logger.info(
+                "🤔 Thinking with %s%s...",
+                current_model,
+                " (fallback)" if i > 0 else "",
+            )
+
+            start_time = time.time()
             try:
-                logger.info(
-                    "🤔 Thinking with %s%s...",
-                    current_model,
-                    " (fallback)" if i > 0 else "",
-                )
-
-                start_time = time.time()
-
-                if current_model.startswith("ollama/"):
-                    content, tokens, cost = await self._ollama_chat(
-                        model=current_model.removeprefix("ollama/"),
-                        messages=messages,
-                    )
-                else:
-                    response = await litellm.acompletion(
-                        model=current_model,
-                        messages=messages,
-                        max_tokens=4096,
-                        temperature=0.7,
-                    )
-
-                    content = response.choices[0].message.content or ""
-                    tokens = response.usage.total_tokens if response.usage else 0
-                    cost = response._hidden_params.get("response_cost", 0.0) if hasattr(response, '_hidden_params') else 0.0
-
+                result = await self._invoke_with_retry(current_model, messages, stream=False)
+                content, tokens, cost = result  # type: ignore[misc]
                 elapsed = round(time.time() - start_time, 2)
                 self._total_tokens += tokens
                 self._total_cost += cost
@@ -114,16 +105,21 @@ class Brain:
                 )
 
             except Exception as e:
+                last_error = e
+                error_type = self._classify_error(e)
                 logger.error(
-                    "❌ Model %s failed: %s",
+                    "❌ Model %s exhausted retries: [%s] %s",
                     current_model,
+                    error_type,
                     str(e)[:200],
                 )
                 if i == 0:
                     logger.info("↩️ Switching to fallback chain: %s", ", ".join(candidates[1:]) or "-")
                 continue
 
-        # Both models failed
+        # All candidates failed
+        final_error = str(last_error)[:200] if last_error else "All models failed"
+        error_type = self._classify_error(last_error) if last_error else "unknown"
         return BrainResponse(
             content="Maaf, saya sedang mengalami masalah teknis. Coba lagi nanti ya 🙏",
             model_used="none",
@@ -131,7 +127,8 @@ class Brain:
             tokens_used=0,
             cost_estimate=0,
             success=False,
-            error="All models failed",
+            error=final_error,
+            error_type=error_type,
         )
 
     async def stream_think(
@@ -146,7 +143,14 @@ class Brain:
         """Stream response chunks, then emit a final BrainResponse event."""
         messages = self._build_messages(user_message, memory_context, conversation_history, user_name)
 
+        # Build candidate chain: primary + fallbacks + local Ollama safety net
         candidates = self._model_candidates(model, fallback_model)
+        if self.config.ollama_api_key and not any(c.startswith("ollama/") for c in candidates if c):
+            fast_local = getattr(self.config, "ollama_default_model", "ministral-3:3b-cloud")
+            candidates.append(f"ollama/{fast_local}")
+
+        last_error: Exception | None = None
+
         for i, current_model in enumerate(candidates):
             if not current_model:
                 continue
@@ -156,33 +160,23 @@ class Brain:
             tokens = 0
             cost = 0.0
 
-            try:
-                logger.info(
-                    "🌊 Streaming with %s%s...",
-                    current_model,
-                    " (fallback)" if i > 0 else "",
-                )
+            logger.info(
+                "🌊 Streaming with %s%s...",
+                current_model,
+                " (fallback)" if i > 0 else "",
+            )
 
-                if current_model.startswith("ollama/"):
-                    async for chunk in self._ollama_stream(
-                        current_model.removeprefix("ollama/"),
-                        messages,
-                    ):
-                        if chunk.get("type") == "delta":
-                            text = chunk.get("content", "")
-                            content_parts.append(text)
-                            yield chunk
-                        elif chunk.get("type") == "usage":
-                            tokens = int(chunk.get("tokens", 0))
-                else:
-                    async for chunk in self._litellm_stream(current_model, messages):
-                        if chunk.get("type") == "delta":
-                            text = chunk.get("content", "")
-                            content_parts.append(text)
-                            yield chunk
-                        elif chunk.get("type") == "usage":
-                            tokens = int(chunk.get("tokens", 0))
-                            cost = float(chunk.get("cost", 0.0))
+            try:
+                stream_iter = await self._invoke_with_retry(current_model, messages, stream=True)
+                # stream_iter is an AsyncIterator[dict]
+                async for chunk in stream_iter:  # type: ignore[union-attr]
+                    if chunk.get("type") == "delta":
+                        text = chunk.get("content", "")
+                        content_parts.append(text)
+                        yield chunk
+                    elif chunk.get("type") == "usage":
+                        tokens = int(chunk.get("tokens", 0))
+                        cost = float(chunk.get("cost", 0.0))
 
                 elapsed = round(time.time() - start_time, 2)
                 content = "".join(content_parts)
@@ -204,11 +198,20 @@ class Brain:
                 return
 
             except Exception as e:
-                logger.error("❌ Streaming model %s failed: %s", current_model, str(e)[:200])
+                last_error = e
+                error_type = self._classify_error(e)
+                logger.error(
+                    "❌ Streaming model %s exhausted retries: [%s] %s",
+                    current_model,
+                    error_type,
+                    str(e)[:200],
+                )
                 if i == 0:
                     logger.info("↩️ Switching streaming fallback chain to: %s", ", ".join(candidates[1:]) or "-")
                 continue
 
+        final_error = str(last_error)[:200] if last_error else "All streaming models failed"
+        error_type = self._classify_error(last_error) if last_error else "unknown"
         yield {
             "type": "final",
             "response": BrainResponse(
@@ -218,7 +221,8 @@ class Brain:
                 tokens_used=0,
                 cost_estimate=0,
                 success=False,
-                error="All streaming models failed",
+                error=final_error,
+                error_type=error_type,
             ),
         }
 
@@ -262,6 +266,79 @@ class Brain:
             candidates.append(candidate)
             seen.add(candidate)
         return candidates
+
+    @staticmethod
+    def _classify_error(error: Exception) -> str:
+        """Classify an LLM error into a known category."""
+        msg = str(error).lower()
+        exc_type = type(error).__name__.lower()
+
+        if any(k in msg for k in ("rate limit", "ratelimit", "too many requests", "429", "throttled")):
+            return "rate_limit"
+        if any(k in msg for k in ("timeout", "timed out", "connection reset", "eof", "broken pipe")):
+            return "timeout"
+        if any(k in msg for k in ("context length", "maximum context length", "token limit", "too large", "context_length_exceeded")):
+            return "context_length"
+        if any(k in msg for k in ("authentication", "auth", "unauthorized", "401", "403", "invalid api key", "incorrect api key")):
+            return "auth_failed"
+        if any(k in msg for k in ("content policy", "moderation", "blocked", "safety", "refusal", "responsibleai")):
+            return "content_policy"
+        if any(k in exc_type for k in ("connectionerror", "connecterror", "ssl", "certificate")):
+            return "timeout"
+        return "unknown"
+
+    async def _invoke_with_retry(
+        self,
+        model: str,
+        messages: list[dict],
+        stream: bool = False,
+    ) -> tuple[str, int, float] | AsyncIterator[dict]:
+        """
+        Invoke a model with exponential backoff retries.
+        Returns (content, tokens, cost) for non-stream, or AsyncIterator for stream.
+        """
+        retries = 2
+        delays = [1.0, 3.0]  # Exponential-ish backoff
+
+        last_error: Exception | None = None
+
+        for attempt in range(retries + 1):
+            try:
+                if model.startswith("ollama/"):
+                    if stream:
+                        return self._ollama_stream(model.removeprefix("ollama/"), messages)
+                    return await self._ollama_chat(
+                        model=model.removeprefix("ollama/"),
+                        messages=messages,
+                    )
+                else:
+                    if stream:
+                        return self._litellm_stream(model, messages)
+                    response = await litellm.acompletion(
+                        model=model,
+                        messages=messages,
+                        max_tokens=4096,
+                        temperature=0.7,
+                    )
+                    content = response.choices[0].message.content or ""
+                    tokens = response.usage.total_tokens if response.usage else 0
+                    cost = response._hidden_params.get("response_cost", 0.0) if hasattr(response, '_hidden_params') else 0.0
+                    return content, tokens, cost
+            except Exception as e:
+                last_error = e
+                error_type = self._classify_error(e)
+                logger.warning(
+                    "⚠️ Model %s failed (attempt %d/%d): [%s] %s",
+                    model,
+                    attempt + 1,
+                    retries + 1,
+                    error_type,
+                    str(e)[:180],
+                )
+                if attempt < retries:
+                    await asyncio.sleep(delays[attempt])
+
+        raise last_error or RuntimeError(f"All retries exhausted for {model}")
 
     async def extract_memories(
         self,

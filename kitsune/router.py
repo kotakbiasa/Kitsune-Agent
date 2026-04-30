@@ -290,8 +290,11 @@ class Router:
         success: bool,
         response_time: float,
         from_feedback: bool = False,
+        error_type: str | None = None,
     ):
-        """Record the result of a model execution for optimization."""
+        """Record the result of a model execution for optimization.
+        error_type: rate_limit, timeout, context_length, auth_failed, content_policy, unknown
+        """
         rules = self.config.routing_rules
         if task_category not in rules.get("rules", {}):
             return
@@ -337,6 +340,8 @@ class Router:
                 "fail_count": 0,
                 "avg_response_time": 0.0,
                 "timed_uses": 0,
+                "error_counts": {},
+                "last_error_type": None,
             },
         )
         model["uses"] = model.get("uses", 0) + 1
@@ -345,6 +350,19 @@ class Router:
             model["success_count"] = model.get("success_count", 0) + 1
         else:
             model["fail_count"] = model.get("fail_count", 0) + 1
+            if error_type:
+                model["last_error_type"] = error_type
+                err_counts = model.setdefault("error_counts", {})
+                err_counts[error_type] = err_counts.get(error_type, 0) + 1
+
+                # Error pattern learning: if same error repeats 3x, auto-penalize
+                if err_counts[error_type] >= 3:
+                    logger.warning(
+                        "📉 Error pattern detected for %s: %s occurred %d times",
+                        model_used,
+                        error_type,
+                        err_counts[error_type],
+                    )
         if not from_feedback and response_time > 0:
             timed_uses = model.get("timed_uses", 0) + 1
             prev_avg = model.get("avg_response_time", 0.0)
@@ -361,11 +379,12 @@ class Router:
             self.config.save_routing_rules()
 
         logger.debug(
-            "📊 Recorded: %s on %s (success=%s, time=%.2fs)",
+            "📊 Recorded: %s on %s (success=%s, time=%.2fs, error=%s)",
             task_category,
             model_used,
             success,
             response_time,
+            error_type or "none",
         )
 
     def optimize_routing(self):
@@ -452,7 +471,7 @@ class Router:
         return True
 
     def _model_score(self, stats: dict, model: str) -> float | None:
-        """Score model quality from feedback and latency. Higher is better."""
+        """Score model quality from feedback, latency, and error patterns. Higher is better."""
         # Circuit breaker penalty
         cb = self._circuit_breakers.get(model, {})
         tripped_until = cb.get("tripped_until", 0.0)
@@ -474,7 +493,15 @@ class Router:
         if last_used and (time.time() - last_used) > 86400:
             recency_penalty = 0.05
 
-        return success_rate - latency_penalty - recency_penalty
+        # Error pattern penalty
+        error_penalty = 0.0
+        err_counts = stats.get("error_counts", {})
+        for err_type, count in err_counts.items():
+            if count >= 3:
+                # Escalating penalty: 0.05 per error type that has hit threshold
+                error_penalty += 0.05 * min(count / 3, 3)
+
+        return success_rate - latency_penalty - recency_penalty - error_penalty
 
     def get_routing_stats(self) -> str:
         """Get human-readable routing statistics."""
