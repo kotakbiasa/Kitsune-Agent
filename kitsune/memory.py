@@ -360,6 +360,58 @@ class MemorySystem:
 
         return {"name": name, "nickname": nickname}
 
+    # ---- Personality ----
+
+    def set_user_personality(self, user_id: int, personality: str) -> str | None:
+        """Store a user's preferred bot personality as knowledge."""
+        personality = personality.strip()
+        if not personality:
+            return None
+        fact = f"Bot personality for this user: {personality}"
+        return self.store_knowledge(
+            user_id=user_id,
+            fact=fact,
+            knowledge_type="preference",
+            topic="personality",
+            importance=0.95,
+            source="user_command",
+        )
+
+    def get_user_personality(self, user_id: int) -> str:
+        """Return the user's preferred personality text, or empty string."""
+        try:
+            results = self.knowledge.get(
+                where={
+                    "$and": [
+                        {"user_id": str(user_id)},
+                        {"topic": "personality"},
+                    ]
+                }
+            )
+        except Exception as e:
+            logger.debug("Personality lookup failed: %s", e)
+            return ""
+
+        docs = results.get("documents", [])
+        metas = results.get("metadatas", [])
+        if not docs:
+            return ""
+
+        # Get most recently updated
+        latest = ""
+        latest_time = ""
+        for doc, meta in zip(docs, metas):
+            updated = meta.get("updated_at") or meta.get("created_at") or ""
+            if updated >= latest_time:
+                latest_time = updated
+                latest = doc
+
+        # Strip the boilerplate prefix
+        prefix = "Bot personality for this user: "
+        if latest.startswith(prefix):
+            return latest[len(prefix):]
+        return latest
+
     def get_stats(self) -> dict:
         """Return memory system statistics."""
         return {

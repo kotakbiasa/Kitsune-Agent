@@ -178,6 +178,7 @@ class KitsuneBot:
         router.message.register(self._cmd_improve, Command("improve"))
         router.message.register(self._cmd_improvements, Command("improvements"))
         router.message.register(self._cmd_health, Command("health"))
+        router.message.register(self._cmd_personality, Command("personality"))
         router.message.register(self._cmd_whoami, Command("whoami"))
         router.message.register(self._cmd_intro, Command("intro"))
         router.message.register(self._cmd_config, Command("config"))
@@ -280,13 +281,15 @@ class KitsuneBot:
             "/terminal <command> — Jalankan perintah shell (owner only)\n"
             "/improve <ide/masalah> — Buat proposal patch aman untuk direview\n"
             "/improvements — Lihat proposal improvement terbaru\n"
+            "/personality <deskripsi> — Ubah gaya/bot personality\n"
             "/forget — Hapus semua memori tentangmu\n"
             "/reset — Reset percakapan saat ini\n\n"
             "💡 **Tips:**\n"
             "• Langsung kirim pesan untuk mulai chat\n"
             "• Kirim document/photo untuk cek jenis file dan membaca preview teks\n"
             "• Bilang 'buatkan script Python untuk X' — bot otomatis generate & kirim file\n"
-            "• Bilang 'buatkan config YAML' — bot otomatis generate & kirim file"
+            "• Bilang 'gunakan deepseek' — ganti model secara langsung\n"
+            "• Bilang 'kita jadi sarkas' — ubah personality bot"
         )
         await self._safe_answer(message, help_text, parse_mode=ParseMode.MARKDOWN)
 
@@ -533,6 +536,39 @@ class KitsuneBot:
         if not self._is_owner_message(message):
             return
         await self._safe_answer(message, self.health_monitor.get_summary(), parse_mode=ParseMode.MARKDOWN)
+
+    async def _cmd_personality(self, message: Message):
+        user = message.from_user
+        if not user or not self._is_message_authorized(message):
+            return
+
+        args = self._command_args(message)
+        if not args:
+            current = self.memory.get_user_personality(user.id)
+            if current:
+                await self._safe_answer(
+                    message,
+                    f"🎭 **Personality saat ini:**\n\n_{current[:400]}_\n\n"
+                    f"Ketik `/personality <deskripsi>` untuk mengubah, "
+                    f"atau *'reset personality'* untuk menghapus.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            else:
+                await self._safe_answer(
+                    message,
+                    "🎭 Belum ada personality custom.\n\n"
+                    "Ketik `/personality <deskripsi>` untuk mengatur.\n"
+                    "Contoh: `/personality jadi asisten yang sarkas tapi pintar`",
+                )
+            return
+
+        self.memory.set_user_personality(user.id, args)
+        await self._safe_answer(
+            message,
+            f"✅ Personality diubah! Sekarang aku akan berperilaku seperti:\n\n_{args[:400]}_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        logger.info("🎭 User %d set personality via /personality: %s", user.id, args[:100])
 
     async def _cmd_whoami(self, message: Message):
         user = message.from_user
@@ -931,6 +967,7 @@ class KitsuneBot:
                 memory_context=memory_context,
                 conversation_history=conversation_history,
                 user_name=user_name,
+                personality_context="",
             )
         except Exception as e:
             logger.error("File generation LLM call failed: %s", e)
@@ -1124,6 +1161,7 @@ class KitsuneBot:
                 ]
                 if part
             )
+            personality_context = self._get_personality_context(user.id)
             history = self._chat_history.get(hist_key, [])
             response = await self.brain.think(
                 user_message=file_prompt,
@@ -1132,6 +1170,7 @@ class KitsuneBot:
                 memory_context=memory_context,
                 conversation_history=history,
                 user_name=user_name,
+                personality_context=personality_context,
             )
 
             self._chat_history.setdefault(hist_key, [])
@@ -1241,6 +1280,34 @@ class KitsuneBot:
                 fallback_model = []  # No fallback when user explicitly chose
                 logger.info("🔄 Using user-override model %s for user %d", override, user.id)
 
+            # Check for personality change request
+            requested_personality = self._detect_personality_request(text)
+            if requested_personality:
+                self.memory.set_user_personality(user.id, requested_personality)
+                await self._safe_answer(
+                    message,
+                    f"✅ Personality diubah! Sekarang aku akan berperilaku seperti:\n\n"
+                    f"_{requested_personality[:300]}_\n\n"
+                    f"Ketik *'reset personality'* untuk kembali ke default.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                logger.info("🎭 User %d set personality: %s", user.id, requested_personality[:100])
+                return
+
+            if self._detect_personality_reset(text):
+                old = self.memory.get_user_personality(user.id)
+                if old:
+                    # Clear by storing empty personality
+                    self.memory.set_user_personality(user.id, "")
+                    await self._safe_answer(message, "🎭 Personality direset ke default! 🦊")
+                    logger.info("🎭 User %d reset personality", user.id)
+                else:
+                    await self._safe_answer(message, "Tidak ada personality custom yang aktif.")
+                return
+
+            # Build personality context for this user
+            personality_context = self._get_personality_context(user.id)
+
             # Auto file generation
             suggested_filename = self._detect_file_generation_request(text)
             if suggested_filename:
@@ -1299,6 +1366,7 @@ class KitsuneBot:
                     memory_context=memory_context,
                     conversation_history=history,
                     user_name=user_name,
+                    personality_context=personality_context,
                 )
             else:
                 response = await self.brain.think(
@@ -1308,6 +1376,7 @@ class KitsuneBot:
                     memory_context=memory_context,
                     conversation_history=history,
                     user_name=user_name,
+                    personality_context=personality_context,
                 )
 
             self._chat_history.setdefault(hist_key, [])
@@ -1412,6 +1481,7 @@ class KitsuneBot:
                 fallback_model = []
                 logger.info("🔄 Using user-override model %s for user %d in group", override, user.id)
 
+            personality_context = self._get_personality_context(user.id)
             memory_context = "\n\n".join(
                 part
                 for part in [
@@ -1431,6 +1501,7 @@ class KitsuneBot:
                     memory_context=memory_context,
                     conversation_history=history,
                     user_name=user_name,
+                    personality_context=personality_context,
                 )
             else:
                 response = await self.brain.think(
@@ -1440,6 +1511,7 @@ class KitsuneBot:
                     memory_context=memory_context,
                     conversation_history=history,
                     user_name=user_name,
+                    personality_context=personality_context,
                 )
 
             self._chat_history.setdefault(hist_key, [])
@@ -1601,6 +1673,7 @@ class KitsuneBot:
                 logger.info("🔄 Auto-retrying with fast model due to: %s", exc_type)
                 fast_model = pick_fast_model(self.config)
                 history = self._chat_history.get(hist_key, [])
+                personality_context = self._get_personality_context(user.id) if user else ""
                 retry_response = await self.brain.think(
                     user_message=user_message,
                     model=fast_model,
@@ -1608,6 +1681,7 @@ class KitsuneBot:
                     memory_context="",
                     conversation_history=history,
                     user_name=user.first_name if user else None,
+                    personality_context=personality_context,
                 )
                 if retry_response.success:
                     await self._send_or_finalize_response(message, retry_response, "simple_qa", None)
@@ -1672,6 +1746,40 @@ class KitsuneBot:
         if "telegram" in msg:
             return "📡 Ada masalah dengan Telegram. Coba lagi ya!"
         return "😅 Maaf, saya sedang mengalami masalah teknis. Coba lagi nanti ya!"
+
+    # ---- Personality ----
+
+    def _get_personality_context(self, user_id: int) -> str:
+        """Return the user's preferred personality text for injection into system prompt."""
+        personality = self.memory.get_user_personality(user_id)
+        return personality
+
+    @staticmethod
+    def _detect_personality_request(text: str) -> str | None:
+        """Detect natural-language personality change requests. Returns new personality or None."""
+        text_lower = text.lower().strip()
+        patterns = [
+            r"\b(?:personality|persona|karakter|sifat|gaya)\s*[:=]\s*(.+?)(?:\.|$)",
+            r"\b(?:jadi|kita jadi|aku mau|aku ingin|buat)\s+(?:bot\s+)?(?:jadi|menjadi|ber|punya|dengan)\s+(.+?)(?:\.|$)",
+            r"\b(?:ganti|ubah)\s+(?:personality|persona|karakter|gaya)\s+(?:jadi|menjadi|ke)\s+(.+?)(?:\.|$)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text_lower, re.DOTALL)
+            if match:
+                personality = match.group(1).strip()
+                if len(personality) > 3 and len(personality) < 500:
+                    return personality
+        return None
+
+    @staticmethod
+    def _detect_personality_reset(text: str) -> bool:
+        """Detect personality reset requests."""
+        text_lower = text.lower().strip()
+        return bool(re.search(
+            r"\b(?:reset|hapus|batal|kembali|default)\s+(?:personality|persona|karakter|gaya)\b|"
+            r"\b(?:balik|kembali)\s+ke\s+(?:default|awal|normal)\b",
+            text_lower,
+        ))
 
     # ---- Model Override Detection ----
 
@@ -1840,6 +1948,7 @@ class KitsuneBot:
         memory_context: str,
         conversation_history: list[dict],
         user_name: str | None = None,
+        personality_context: str = "",
     ) -> BrainResponse:
         if self._can_stream_with_draft(message):
             response = await self._stream_response_with_draft(
@@ -1850,20 +1959,21 @@ class KitsuneBot:
                 memory_context=memory_context,
                 conversation_history=conversation_history,
                 user_name=user_name,
+                personality_context=personality_context,
             )
             if response:
                 return response
 
         stream_message = await self._safe_answer(message, "...")
         if not stream_message:
-            return await self.brain.think(user_message, model, fallback_model, memory_context, conversation_history, user_name)
+            return await self.brain.think(user_message, model, fallback_model, memory_context, conversation_history, user_name, personality_context)
 
         final_response = None
         content = ""
         last_edit_at = 0.0
         last_edit_len = 0
 
-        async for event in self.brain.stream_think(user_message, model, fallback_model, memory_context, conversation_history, user_name):
+        async for event in self.brain.stream_think(user_message, model, fallback_model, memory_context, conversation_history, user_name, personality_context):
             if event.get("type") == "delta":
                 content += event.get("content", "")
                 now = time.monotonic()
@@ -1895,6 +2005,7 @@ class KitsuneBot:
         memory_context: str,
         conversation_history: list[dict],
         user_name: str | None = None,
+        personality_context: str = "",
     ) -> BrainResponse | None:
         chat_id = message.chat.id
         draft_id = int(time.time() * 1000)
@@ -1905,7 +2016,7 @@ class KitsuneBot:
 
         await self._safe_send_chat_action(message)
 
-        async for event in self.brain.stream_think(user_message, model, fallback_model, memory_context, conversation_history, user_name):
+        async for event in self.brain.stream_think(user_message, model, fallback_model, memory_context, conversation_history, user_name, personality_context):
             if event.get("type") == "delta":
                 content += event.get("content", "")
                 now = time.monotonic()

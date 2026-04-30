@@ -54,12 +54,13 @@ class Brain:
         memory_context: str = "",
         conversation_history: list[dict] | None = None,
         user_name: str | None = None,
+        personality_context: str = "",
     ) -> BrainResponse:
         """
         Generate a response using the specified model with memory context.
         Auto-retries with backoff, then falls back through the chain.
         """
-        messages = self._build_messages(user_message, memory_context, conversation_history, user_name)
+        messages = self._build_messages(user_message, memory_context, conversation_history, user_name, personality_context)
 
         # Build candidate chain: primary + fallbacks + local Ollama safety net
         candidates = self._model_candidates(model, fallback_model)
@@ -139,9 +140,10 @@ class Brain:
         memory_context: str = "",
         conversation_history: list[dict] | None = None,
         user_name: str | None = None,
+        personality_context: str = "",
     ) -> AsyncIterator[dict]:
         """Stream response chunks, then emit a final BrainResponse event."""
-        messages = self._build_messages(user_message, memory_context, conversation_history, user_name)
+        messages = self._build_messages(user_message, memory_context, conversation_history, user_name, personality_context)
 
         # Build candidate chain: primary + fallbacks + local Ollama safety net
         candidates = self._model_candidates(model, fallback_model)
@@ -232,6 +234,7 @@ class Brain:
         memory_context: str = "",
         conversation_history: list[dict] | None = None,
         user_name: str | None = None,
+        personality_context: str = "",
     ) -> list[dict]:
         system_prompt = self.config.prompt_templates.get(
             "system_prompt",
@@ -240,6 +243,9 @@ class Brain:
 
         if user_name:
             system_prompt = f"{system_prompt}\n\nUser's name: {user_name}. Address them by name when appropriate."
+
+        if personality_context:
+            system_prompt = f"{system_prompt}\n\n[Personality override]\n{personality_context}"
 
         if memory_context:
             system_prompt = f"{system_prompt}\n\n{memory_context}"
