@@ -12,7 +12,7 @@ import litellm
 from ollama import Client
 
 from kitsune.config import Config
-from kitsune.model_utils import pick_fast_model
+from kitsune.model_utils import pick_fast_model, pick_model_for_task
 
 logger = logging.getLogger("kitsune.router")
 
@@ -26,6 +26,8 @@ TASK_CATEGORIES = [
     "translation",
     "summarization",
     "web_search",
+    "multimodal",
+    "long_context",
 ]
 
 
@@ -129,42 +131,57 @@ class Router:
             return "math"
         if re.search(r"\b(cerita|puisi|novel|copywriting|caption|creative|story|poem)\b", text):
             return "creative_writing"
+        # Multimodal detection
+        multimodal_keywords = (
+            r"\b(gambar|image|photo|foto|video|visual|lihat|describe.*image|analyze.*photo)\b",
+            r"\b(ocr|read.*image|scan.*photo|apa.*ini.*gambar)\b",
+        )
+        for pattern in multimodal_keywords:
+            if re.search(pattern, text):
+                return "multimodal"
+
+        # Long context detection
+        long_context_keywords = (
+            r"\b(dokumen.*panjang|long.*document|banyak.*teks|analyze.*pdf|baca.*file.*besar)\b",
+            r"\b(100k|200k|context.*long|very.*long|ringkas.*buku|summarize.*book)\b",
+        )
+        for pattern in long_context_keywords:
+            if re.search(pattern, text):
+                return "long_context"
+
         if len(stripped) > 180 or re.search(r"\b(analisa|analyze|compare|bandingkan|kenapa|mengapa|strategi|arsitektur|rancang)\b", text):
             return "complex_reasoning"
         return "simple_qa"
 
     def get_model_for_task(self, task_category: str) -> tuple[str, list[str]]:
         """
-        Get the best model for a task category based on learned routing rules.
+        Get the best model for a task category.
+        Uses USE_CASE_MODELS pool with auto-switch based on available providers.
         Returns (primary_model, fallback_models).
         """
-        if "ollama" in self.config.available_providers:
-            candidates = self._ollama_candidates_for_task(task_category)
-            logger.info("⚡ Ollama candidates for '%s': %s", task_category, ", ".join(candidates))
-            return candidates[0], candidates[1:]
-
-        rules = self.config.routing_rules.get("rules", {})
-
-        if task_category in rules:
-            rule = rules[task_category]
-            primary = rule.get("primary_model", "")
-            fallback = rule.get("fallback_model", "")
-
-            # Validate that we have the API key for this model's provider
-            primary = self._validate_model(primary)
-            fallback = self._validate_model(fallback)
-
+        # Use use-case based model picking (cloud-first)
+        try:
+            primary, fallbacks = pick_model_for_task(self.config, task_category)
             logger.info(
-                "⚡ Model for '%s': %s (fallback: %s)",
+                "⚡ Model for '%s': %s (fallbacks: %s)",
                 task_category,
                 primary,
-                fallback,
+                ", ".join(fallbacks) if fallbacks else "-",
             )
-            return primary, [fallback] if fallback and fallback != primary else []
+            return primary, fallbacks
+        except ValueError:
+            # No cloud providers configured; fall through to Ollama legacy path
+            logger.warning("No cloud LLM providers configured, trying Ollama fallback")
 
-        # Default
-        default_model = pick_fast_model(self.config)
-        return default_model, []
+        # Legacy Ollama path (kept for backward compatibility)
+        if "ollama" in self.config.available_providers:
+            candidates = self._ollama_candidates_for_task(task_category)
+            if candidates:
+                logger.info("⚡ Ollama candidates for '%s': %s", task_category, ", ".join(candidates))
+                return candidates[0], candidates[1:]
+
+        logger.error("No LLM providers configured!")
+        return "none", []
 
     def _ollama_candidates_for_task(self, task_category: str) -> list[str]:
         configured = self.config.ollama_task_model_pools.get(task_category) or self.config.ollama_model_pool

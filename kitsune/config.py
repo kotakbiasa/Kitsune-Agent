@@ -393,8 +393,8 @@ DEFAULT_ROUTING_RULES = {
     "rules": {
         "simple_qa": {
             "description": "Simple questions, greetings, factual lookups",
-            "primary_model": "ollama/ministral-3:3b-cloud",
-            "fallback_model": "ollama/rnj-1:8b-cloud",
+            "primary_model": "anthropic/claude-haiku-4-5-20251001",
+            "fallback_model": "gemini/gemini-3.1-flash-lite-002",
             "success_count": 0,
             "fail_count": 0,
             "total_uses": 0,
@@ -402,8 +402,8 @@ DEFAULT_ROUTING_RULES = {
         },
         "complex_reasoning": {
             "description": "Analysis, comparison, multi-step reasoning",
-            "primary_model": "ollama/deepseek-v4-flash:cloud",
-            "fallback_model": "ollama/nemotron-3-super:cloud",
+            "primary_model": "anthropic/claude-opus-4-6-20251001",
+            "fallback_model": "openai/gpt-5.4",
             "success_count": 0,
             "fail_count": 0,
             "total_uses": 0,
@@ -411,8 +411,8 @@ DEFAULT_ROUTING_RULES = {
         },
         "coding": {
             "description": "Code generation, debugging, code review",
-            "primary_model": "ollama/qwen3-coder-next:cloud",
-            "fallback_model": "ollama/rnj-1:8b-cloud",
+            "primary_model": "openai/gpt-5.3-codex",
+            "fallback_model": "ollama/deepseek-3.2",
             "success_count": 0,
             "fail_count": 0,
             "total_uses": 0,
@@ -420,8 +420,8 @@ DEFAULT_ROUTING_RULES = {
         },
         "creative_writing": {
             "description": "Stories, poems, creative content",
-            "primary_model": "ollama/qwen3.5:cloud",
-            "fallback_model": "ollama/gemini-3-flash-preview:cloud",
+            "primary_model": "anthropic/claude-sonnet-4-5-20251001",
+            "fallback_model": "openai/gpt-5.2",
             "success_count": 0,
             "fail_count": 0,
             "total_uses": 0,
@@ -429,8 +429,8 @@ DEFAULT_ROUTING_RULES = {
         },
         "math": {
             "description": "Mathematical calculations, proofs, equations",
-            "primary_model": "ollama/deepseek-v4-flash:cloud",
-            "fallback_model": "ollama/nemotron-3-super:cloud",
+            "primary_model": "openai/gpt-5.4",
+            "fallback_model": "ollama/deepseek-v3-2-volc",
             "success_count": 0,
             "fail_count": 0,
             "total_uses": 0,
@@ -438,8 +438,8 @@ DEFAULT_ROUTING_RULES = {
         },
         "translation": {
             "description": "Language translation tasks",
-            "primary_model": "ollama/ministral-3:3b-cloud",
-            "fallback_model": "ollama/qwen3.5:cloud",
+            "primary_model": "gemini/gemini-3.1-flash-lite-002",
+            "fallback_model": "openai/gpt-4o-mini",
             "success_count": 0,
             "fail_count": 0,
             "total_uses": 0,
@@ -447,8 +447,8 @@ DEFAULT_ROUTING_RULES = {
         },
         "summarization": {
             "description": "Summarizing text, documents, articles",
-            "primary_model": "ollama/qwen3.5:cloud",
-            "fallback_model": "ollama/gemini-3-flash-preview:cloud",
+            "primary_model": "openai/gpt-5.2",
+            "fallback_model": "anthropic/claude-sonnet-4-5-20251001",
             "success_count": 0,
             "fail_count": 0,
             "total_uses": 0,
@@ -456,8 +456,26 @@ DEFAULT_ROUTING_RULES = {
         },
         "web_search": {
             "description": "Web search for real-time information",
-            "primary_model": "ollama/deepseek-v4-flash:cloud",
-            "fallback_model": "ollama/nemotron-3-super:cloud",
+            "primary_model": "anthropic/claude-opus-4-6-20251001",
+            "fallback_model": "openai/gpt-5.4",
+            "success_count": 0,
+            "fail_count": 0,
+            "total_uses": 0,
+            "avg_response_time": 0.0,
+        },
+        "multimodal": {
+            "description": "Image/video understanding and generation",
+            "primary_model": "gemini/gemini-2.5-pro-002",
+            "fallback_model": "openai/gpt-5.4",
+            "success_count": 0,
+            "fail_count": 0,
+            "total_uses": 0,
+            "avg_response_time": 0.0,
+        },
+        "long_context": {
+            "description": "Long document analysis, 100K+ tokens",
+            "primary_model": "openrouter/kimi/kimi-k2.5",
+            "fallback_model": "gemini/gemini-2.5-pro-002",
             "success_count": 0,
             "fail_count": 0,
             "total_uses": 0,
@@ -478,8 +496,10 @@ DEFAULT_PROMPT_TEMPLATES = {
     ),
     "classifier_prompt": (
         "Classify the following user message into exactly ONE category. "
-        "Categories: simple_qa, complex_reasoning, coding, creative_writing, math, translation, summarization, web_search. "
+        "Categories: simple_qa, complex_reasoning, coding, creative_writing, math, translation, summarization, web_search, multimodal, long_context. "
         "Use web_search if the query asks for current information, news, weather, prices, or facts that may change over time. "
+        "Use multimodal if the query involves images, videos, or visual content. "
+        "Use long_context if the query involves very long documents or requires analyzing large amounts of text. "
         "Reply with ONLY the category name, nothing else.\n\n"
         "User message: {message}"
     ),
