@@ -1537,37 +1537,47 @@ class KitsuneBot:
     ):
         model_short = response.model_used.split("/")[-1] if "/" in response.model_used else response.model_used
         footer = f"\n\n`🤖 {model_short} | 📋 {task_category} | ⏱ {response.response_time}s`"
-
-        # Telegram message limit is 4096 chars. Reserve space for footer + truncation notice.
-        max_content_len = 4096 - len(footer) - 24
-        content = response.content
-        if len(content) > max_content_len:
-            content = content[: max_content_len - 3] + "..."
-
-        reply_text = content + footer
         keyboard = self._build_feedback_keyboard()
 
         stream_message = getattr(response, "_telegram_message", None)
-        if stream_message:
-            try:
-                await stream_message.edit_text(
-                    text=reply_text,
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=keyboard,
-                )
-                self._try_register_feedback_meta(stream_message, message, response, task_category, interaction_id)
-                return
-            except TelegramBadRequest:
-                await self._safe_edit_text(stream_message, reply_text, reply_markup=keyboard)
+        chunks = self._split_text(response.content, 4096)
+
+        # If single chunk + footer still fits, send normally
+        if len(chunks) == 1 and len(chunks[0]) + len(footer) <= 4096:
+            reply_text = chunks[0] + footer
+            if stream_message:
+                try:
+                    await stream_message.edit_text(
+                        text=reply_text,
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=keyboard,
+                    )
+                except TelegramBadRequest:
+                    await self._safe_edit_text(stream_message, reply_text, reply_markup=keyboard)
                 self._try_register_feedback_meta(stream_message, message, response, task_category, interaction_id)
                 return
 
-        try:
             sent = await self._safe_answer(message, reply_text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
             self._try_register_feedback_meta(sent, message, response, task_category, interaction_id)
-        except TelegramBadRequest:
-            sent = await self._safe_answer(message, reply_text, reply_markup=keyboard)
-            self._try_register_feedback_meta(sent, message, response, task_category, interaction_id)
+            return
+
+        # Multi-chunk: send chunks 1..N-1 plain, last chunk with footer + keyboard
+        if stream_message:
+            # Edit stream message to first chunk
+            try:
+                await stream_message.edit_text(text=chunks[0], parse_mode=ParseMode.MARKDOWN)
+            except TelegramBadRequest:
+                await self._safe_edit_text(stream_message, chunks[0])
+
+        for idx, chunk in enumerate(chunks):
+            if stream_message and idx == 0:
+                continue  # Already handled above
+            is_last = idx == len(chunks) - 1
+            text = chunk + footer if is_last else chunk
+            markup = keyboard if is_last else None
+            sent = await self._safe_answer(message, text, parse_mode=ParseMode.MARKDOWN if not is_last else None, reply_markup=markup)
+            if is_last:
+                self._try_register_feedback_meta(sent, message, response, task_category, interaction_id)
 
     async def _safe_send_chat_action(self, message: Message, action: ChatAction = ChatAction.TYPING):
         now = time.monotonic()
@@ -1668,6 +1678,52 @@ class KitsuneBot:
         except TelegramNetworkError as e:
             logger.warning("Telegram draft update failed: %s", e)
             return False
+
+    @staticmethod
+    def _split_text(text: str, max_len: int) -> list[str]:
+        """Split text into chunks <= max_len, preferring paragraph/sentence boundaries."""
+        if len(text) <= max_len:
+            return [text]
+
+        chunks: list[str] = []
+        while text:
+            if len(text) <= max_len:
+                chunks.append(text)
+                break
+
+            chunk = text[:max_len]
+            # Try to break at paragraph
+            break_idx = chunk.rfind("\n\n")
+            if break_idx > max_len // 4:
+                chunks.append(text[:break_idx])
+                text = text[break_idx:].lstrip("\n")
+                continue
+
+            # Try to break at newline
+            break_idx = chunk.rfind("\n")
+            if break_idx > max_len // 4:
+                chunks.append(text[:break_idx])
+                text = text[break_idx:].lstrip("\n")
+                continue
+
+            # Try to break at sentence end
+            for sep in (". ", "! ", "? ", "; "):
+                break_idx = chunk.rfind(sep)
+                if break_idx > max_len // 4:
+                    chunks.append(text[: break_idx + len(sep)])
+                    text = text[break_idx + len(sep):]
+                    break
+            else:
+                # Hard break at space
+                break_idx = chunk.rfind(" ")
+                if break_idx > max_len // 4:
+                    chunks.append(text[:break_idx])
+                    text = text[break_idx:].lstrip(" ")
+                else:
+                    # Absolute hard break
+                    chunks.append(text[:max_len])
+                    text = text[max_len:]
+        return chunks
 
     @staticmethod
     def _stream_preview(content: str) -> str:
