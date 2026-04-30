@@ -19,6 +19,7 @@ USE_CASE_MODELS = {
         "gemini": "gemini/gemini-2.5-flash-002",
     },
     "complex_reasoning": {
+        "custom_codex": "custom_codex/codex",
         "anthropic": "anthropic/claude-opus-4-6-20251001",
         "openai": "openai/gpt-5.4",
         "ollama": "ollama/deepseek-v3-2-volc",
@@ -26,6 +27,7 @@ USE_CASE_MODELS = {
         "gemini": "gemini/gemini-2.5-pro-002",
     },
     "creative_writing": {
+        "custom_codex": "custom_codex/codex",
         "anthropic": "anthropic/claude-sonnet-4-5-20251001",
         "openai": "openai/gpt-5.2",
         "ollama": "ollama/qwen3.5",
@@ -33,6 +35,7 @@ USE_CASE_MODELS = {
         "openrouter": "openrouter/anthropic/claude-sonnet-4.5",
     },
     "fast_response": {
+        "custom_codex": "custom_codex/codex",
         "anthropic": "anthropic/claude-haiku-4-5-20251001",
         "gemini": "gemini/gemini-3.1-flash-lite-002",
         "openai": "openai/gpt-4o-mini",
@@ -40,6 +43,7 @@ USE_CASE_MODELS = {
         "openrouter": "openrouter/google/gemini-3.1-flash-lite",
     },
     "multimodal": {
+        "custom_codex": "custom_codex/codex",
         "gemini": "gemini/gemini-2.5-pro-002",
         "openai": "openai/gpt-5.4",
         "ollama": "ollama/gemma4:31b-cloud",
@@ -47,6 +51,7 @@ USE_CASE_MODELS = {
         "openrouter": "openrouter/google/gemini-2.5-pro",
     },
     "long_context": {
+        "custom_codex": "custom_codex/codex",
         "openrouter": "openrouter/kimi/kimi-k2.5",
         "gemini": "gemini/gemini-2.5-pro-002",
         "anthropic": "anthropic/claude-opus-4-6-20251001",
@@ -54,6 +59,7 @@ USE_CASE_MODELS = {
         "ollama": "ollama/gemma4:31b-cloud",
     },
     "math": {
+        "custom_codex": "custom_codex/codex",
         "ollama": "ollama/deepseek-v3-2-volc",
         "openai": "openai/gpt-5.4",
         "anthropic": "anthropic/claude-opus-4-6-20251001",
@@ -61,6 +67,7 @@ USE_CASE_MODELS = {
         "openrouter": "openrouter/deepseek/deepseek-v3-2-volc",
     },
     "translation": {
+        "custom_codex": "custom_codex/codex",
         "gemini": "gemini/gemini-3.1-flash-lite-002",
         "openai": "openai/gpt-4o-mini",
         "ollama": "ollama/ministral-3:3b-cloud",
@@ -68,6 +75,7 @@ USE_CASE_MODELS = {
         "openrouter": "openrouter/google/gemini-3.1-flash-lite",
     },
     "summarization": {
+        "custom_codex": "custom_codex/codex",
         "ollama": "ollama/qwen3.5",
         "openai": "openai/gpt-5.2",
         "gemini": "gemini/gemini-2.5-flash-002",
@@ -75,6 +83,7 @@ USE_CASE_MODELS = {
         "openrouter": "openrouter/anthropic/claude-sonnet-4.5",
     },
     "simple_qa": {
+        "custom_codex": "custom_codex/codex",
         "ollama": "ollama/ministral-3:3b-cloud",
         "gemini": "gemini/gemini-3.1-flash-lite-002",
         "openai": "openai/gpt-4o-mini",
@@ -124,8 +133,8 @@ def _select_from_pool(config: Config, pool: dict[str, str]) -> tuple[str, list[s
             default_model = pool.get(first_provider, "openrouter/google/gemini-3.1-flash-lite")
             return default_model, []
         raise ValueError(
-            "No cloud LLM provider configured. Set OLLAMA_API_KEY, OPENROUTER_API_KEY, "
-            "OPENAI_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY in .env"
+            "No LLM provider configured. Set CUSTOM_CODEX_BASE_URL + CUSTOM_CODEX_API_KEY, "
+            "OLLAMA_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY in .env"
         )
 
     return candidates[0], candidates[1:]
