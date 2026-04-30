@@ -76,6 +76,11 @@ class Config:
         self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
         self.ollama_api_key = os.getenv("OLLAMA_API_KEY", "")
         self.ollama_api_base = os.getenv("OLLAMA_API_BASE", "https://ollama.com").rstrip("/")
+
+        # --- Custom Codex API ---
+        self.custom_codex_base_url = os.getenv("CUSTOM_CODEX_BASE_URL", "").rstrip("/")
+        self.custom_codex_api_key = os.getenv("CUSTOM_CODEX_API_KEY", "")
+
         self.ollama_fast_model = os.getenv("OLLAMA_FAST_MODEL", "ministral-3:3b-cloud")
         self.ollama_legacy_fast_model = os.getenv("OLLAMA_LEGACY_FAST_MODEL", "qwen3.5:cloud")
         self.ollama_reasoning_model = os.getenv("OLLAMA_REASONING_MODEL", "deepseek-v4-flash:cloud")
@@ -263,6 +268,8 @@ class Config:
             providers.append("gemini")
         if self.ollama_api_key:
             providers.append("ollama")
+        if self.custom_codex_base_url and self.custom_codex_api_key:
+            providers.append("custom_codex")
         return providers
 
     # ---- Dynamic Config Files ----

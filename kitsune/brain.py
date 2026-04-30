@@ -317,6 +317,13 @@ class Brain:
                         model=model.removeprefix("ollama/"),
                         messages=messages,
                     )
+                elif model.startswith("custom_codex/"):
+                    if stream:
+                        return self._custom_codex_stream(model.removeprefix("custom_codex/"), messages)
+                    return await self._custom_codex_chat(
+                        model=model.removeprefix("custom_codex/"),
+                        messages=messages,
+                    )
                 else:
                     if stream:
                         return self._litellm_stream(model, messages)
@@ -513,6 +520,57 @@ class Brain:
                 yield item
         finally:
             await producer_task
+
+    async def _custom_codex_chat(
+        self,
+        model: str,
+        messages: list[dict],
+    ) -> tuple[str, int, float]:
+        """Call the self-hosted custom Codex endpoint."""
+        if not self.config.custom_codex_base_url or not self.config.custom_codex_api_key:
+            raise ValueError("CUSTOM_CODEX_BASE_URL and CUSTOM_CODEX_API_KEY are required for custom_codex/* models")
+
+        response = await litellm.acompletion(
+            model=f"openai/{model}",
+            messages=messages,
+            max_tokens=4096,
+            temperature=0.7,
+            api_base=self.config.custom_codex_base_url,
+            api_key=self.config.custom_codex_api_key,
+        )
+        content = response.choices[0].message.content or ""
+        tokens = response.usage.total_tokens if response.usage else 0
+        # No cost tracking for custom endpoint
+        return content, tokens, 0.0
+
+    async def _custom_codex_stream(
+        self,
+        model: str,
+        messages: list[dict],
+    ) -> AsyncIterator[dict]:
+        """Stream from the self-hosted custom Codex endpoint."""
+        if not self.config.custom_codex_base_url or not self.config.custom_codex_api_key:
+            raise ValueError("CUSTOM_CODEX_BASE_URL and CUSTOM_CODEX_API_KEY are required for custom_codex/* models")
+
+        stream = await litellm.acompletion(
+            model=f"openai/{model}",
+            messages=messages,
+            max_tokens=4096,
+            temperature=0.7,
+            stream=True,
+            api_base=self.config.custom_codex_base_url,
+            api_key=self.config.custom_codex_api_key,
+        )
+
+        async for chunk in stream:
+            try:
+                delta = chunk.choices[0].delta.content or ""
+            except Exception:
+                delta = ""
+            if delta:
+                yield {"type": "delta", "content": delta}
+
+        yield {"type": "usage", "tokens": 0, "cost": 0.0}
 
     def get_stats(self) -> dict:
         """Return brain usage statistics."""

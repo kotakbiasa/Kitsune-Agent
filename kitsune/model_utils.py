@@ -11,6 +11,7 @@ from kitsune.config import Config
 
 USE_CASE_MODELS = {
     "coding": {
+        "custom_codex": "custom_codex/codex",
         "ollama": "ollama/deepseek-3.2",
         "openai": "openai/gpt-5.3-codex",
         "openrouter": "openrouter/qwen/qwen3-coder-next",
@@ -81,6 +82,7 @@ USE_CASE_MODELS = {
         "openrouter": "openrouter/google/gemini-3.1-flash-lite",
     },
     "web_search": {
+        "custom_codex": "custom_codex/codex",
         "anthropic": "anthropic/claude-opus-4-6-20251001",
         "openai": "openai/gpt-5.4",
         "ollama": "ollama/deepseek-v3-2-volc",
@@ -152,10 +154,14 @@ MODEL_ALIASES: dict[str, str] = {
     "gemma-4": "ollama/gemma4:31b-cloud",
     "gemma4": "ollama/gemma4:31b-cloud",
     "gemma4-31b": "ollama/gemma4:31b-cloud",
-    # OpenAI Codex
+    # OpenAI Codex (official)
     "codex": "openai/gpt-5.3-codex",
     "gpt-codex": "openai/gpt-5.3-codex",
     "gpt-5.3-codex": "openai/gpt-5.3-codex",
+    # Custom Codex (self-hosted)
+    "my-codex": "custom_codex/codex",
+    "custom-codex": "custom_codex/codex",
+    "codex-custom": "custom_codex/codex",
 }
 
 
