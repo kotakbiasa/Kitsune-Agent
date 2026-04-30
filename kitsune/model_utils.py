@@ -129,6 +129,42 @@ def _select_from_pool(config: Config, pool: dict[str, str]) -> tuple[str, list[s
     return candidates[0], candidates[1:]
 
 
+# ---- Model aliases for natural-language switching ----
+
+MODEL_ALIASES: dict[str, str] = {
+    # Friendly names → canonical model strings
+    "kimi": "openrouter/kimi/kimi-k2.5",
+    "kimi-k2.5": "openrouter/kimi/kimi-k2.5",
+    "kimi k2.5": "openrouter/kimi/kimi-k2.5",
+    "glm": "openrouter/thudm/glm-4-9b",  # Best-effort; not in current pool
+    # Ollama models (local)
+    "deepseek": "ollama/deepseek-v3-2-volc",
+    "deepseek-v3": "ollama/deepseek-v3-2-volc",
+    "deepseek-v3-2": "ollama/deepseek-v3-2-volc",
+    "deepseek-coder": "ollama/deepseek-3.2",
+    "deepseek-3.2": "ollama/deepseek-3.2",
+    "qwen": "ollama/qwen3.5",
+    "qwen-3.5": "ollama/qwen3.5",
+    "qwen3.5": "ollama/qwen3.5",
+    "ministral": "ollama/ministral-3:3b-cloud",
+    "ministral-3": "ollama/ministral-3:3b-cloud",
+    "gemma": "ollama/gemma4:31b-cloud",
+    "gemma-4": "ollama/gemma4:31b-cloud",
+    "gemma4": "ollama/gemma4:31b-cloud",
+    "gemma4-31b": "ollama/gemma4:31b-cloud",
+    # OpenAI Codex
+    "codex": "openai/gpt-5.3-codex",
+    "gpt-codex": "openai/gpt-5.3-codex",
+    "gpt-5.3-codex": "openai/gpt-5.3-codex",
+}
+
+
+def resolve_model_alias(alias: str) -> str | None:
+    """Resolve a friendly model name to a canonical model string."""
+    alias_lower = alias.lower().strip()
+    return MODEL_ALIASES.get(alias_lower)
+
+
 def get_model_info(model: str) -> dict:
     """Return human-readable info about a model."""
     info_map = {

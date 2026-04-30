@@ -30,7 +30,7 @@ from kitsune.config import Config
 from kitsune.health import HealthMonitor
 from kitsune.learner import Learner
 from kitsune.memory import MemorySystem
-from kitsune.model_utils import pick_fast_model
+from kitsune.model_utils import pick_fast_model, resolve_model_alias
 from kitsune.reminder import ReminderSystem
 from kitsune.router import Router
 from kitsune.search import WebSearch, SearchTool
@@ -102,6 +102,10 @@ class KitsuneBot:
         # Implicit negative feedback tracking
         self._last_user_message: dict[int, str] = {}  # user_id -> last message text
         self._last_response_meta: dict[int, dict] = {}  # user_id -> {model, category, response_text, timestamp}
+
+        # User-requested model overrides (e.g., "gunakan kimi" → override routing for this user)
+        self._user_model_override: dict[int, str] = {}  # user_id -> canonical model string
+
         self._implicit_negative_keywords = (
             r"\b(salah|ngawur|gak jelas|tidak jelas|ngaco|bodoh|stupid|nonsense|wrong|incorrect|bad|terrible|awful|useless|ga bisa|gak bisa|tidak bisa|gagal|failed|rusak|broken)\b",
             r"\b(bukan itu|bukan gitu|not that|not what i|bukan yang|kurang|kurang tepat|kurang baik|not good|not helpful|tidak membantu)\b",
@@ -1181,6 +1185,40 @@ class KitsuneBot:
             task_category, _ = await self.router.classify_task(text)
             primary_model, fallback_model = self.router.get_model_for_task(task_category)
 
+            # Check for model override request
+            requested_override = self._detect_model_switch_request(text)
+            if requested_override:
+                self._user_model_override[user.id] = requested_override
+                provider = requested_override.split("/")[0] if "/" in requested_override else "unknown"
+                await self._safe_answer(
+                    message,
+                    f"✅ Oke, sekarang aku pakai **{requested_override.split('/')[-1]}** ({provider}) "
+                    f"untuk semua pesanmu.\n\n"
+                    f"Ketik *'batal model'* atau *'reset model'* untuk kembali ke auto-routing.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                logger.info("🔄 User %d set model override: %s", user.id, requested_override)
+                return
+
+            if self._parse_reset_model(text):
+                old_override = self._user_model_override.pop(user.id, None)
+                if old_override:
+                    await self._safe_answer(
+                        message,
+                        f"🔄 Model override dibatalkan. Sekarang aku balik ke auto-routing! 🦊",
+                    )
+                    logger.info("🔄 User %d reset model override", user.id)
+                else:
+                    await self._safe_answer(message, "Tidak ada model override yang aktif.")
+                return
+
+            # Apply active model override if present
+            override = self._user_model_override.get(user.id)
+            if override:
+                primary_model = override
+                fallback_model = []  # No fallback when user explicitly chose
+                logger.info("🔄 Using user-override model %s for user %d", override, user.id)
+
             # Auto file generation
             suggested_filename = self._detect_file_generation_request(text)
             if suggested_filename:
@@ -1430,6 +1468,37 @@ class KitsuneBot:
         if "telegram" in msg:
             return "📡 Ada masalah dengan Telegram. Coba lagi ya!"
         return "😅 Maaf, saya sedang mengalami masalah teknis. Coba lagi nanti ya!"
+
+    # ---- Model Override Detection ----
+
+    @staticmethod
+    def _detect_model_switch_request(text: str) -> str | None:
+        """Detect if user wants to switch to a specific model. Returns canonical model or None."""
+        text_lower = text.lower().strip()
+        # Patterns like "gunakan kimi", "pakai codex", "ganti ke deepseek", etc.
+        patterns = [
+            r"\b(gunakan|pakai|ganti\s+ke|switch\s+to|use|pake)\s+([a-z0-9\-:]+)\b",
+            r"\b(ganti\s+model\s+(?:jadi|ke|menjadi))\s+([a-z0-9\-:]+)\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                alias = match.group(2).strip()
+                resolved = resolve_model_alias(alias)
+                if resolved:
+                    return resolved
+        return None
+
+    @staticmethod
+    def _parse_reset_model(text: str) -> bool:
+        """Detect if user wants to reset/clear model override."""
+        text_lower = text.lower().strip()
+        return bool(re.search(
+            r"\b(reset|batal|hapus|clear)\s+(?:model|override|pengaturan)\b|"
+            r"\b(kembali|default)\s+(?:model|pengaturan)\b|"
+            r"\b(balik)\s+ke\s+(?:auto|otomatis|default)\b",
+            text_lower,
+        ))
 
     # ---- Implicit Negative Feedback ----
 
