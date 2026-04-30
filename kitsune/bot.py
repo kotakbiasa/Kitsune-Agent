@@ -26,6 +26,7 @@ from aiogram.filters import Command
 from aiogram.methods import SendMessageDraft
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from kitsune.backup import MemoryBackup
 from kitsune.brain import Brain, BrainResponse
 from kitsune.config import Config
 from kitsune.health import HealthMonitor
@@ -94,6 +95,7 @@ class KitsuneBot:
         )
 
         self.health_monitor = HealthMonitor(config, router=self.router)
+        self.backup = MemoryBackup(self.memory, self.config.data_dir)
 
         self._chat_history: dict[tuple[int, int], list[dict]] = {}
         self._draft_retry_until: dict[int, float] = {}
@@ -155,6 +157,10 @@ class KitsuneBot:
         self.health_monitor.start()
         logger.info("🏥 Health monitor started.")
 
+        if self.config.enable_auto_backup:
+            await self.backup.start(self.config.auto_backup_interval_hours)
+            logger.info("💾 Auto-backup started (every %.1fh).", self.config.auto_backup_interval_hours)
+
         logger.info("🚀 Kitsune Bot is ready! Listening for messages...")
         await self.dp.start_polling(
             self.bot,
@@ -179,6 +185,8 @@ class KitsuneBot:
         router.message.register(self._cmd_improve, Command("improve"))
         router.message.register(self._cmd_improvements, Command("improvements"))
         router.message.register(self._cmd_health, Command("health"))
+        router.message.register(self._cmd_backup, Command("backup"))
+        router.message.register(self._cmd_backups, Command("backups"))
         router.message.register(self._cmd_whoami, Command("whoami"))
         router.message.register(self._cmd_intro, Command("intro"))
         router.message.register(self._cmd_config, Command("config"))

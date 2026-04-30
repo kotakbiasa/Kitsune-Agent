@@ -80,6 +80,7 @@ class Config:
         # --- Custom Codex API ---
         self.custom_codex_base_url = os.getenv("CUSTOM_CODEX_BASE_URL", "").rstrip("/")
         self.custom_codex_api_key = os.getenv("CUSTOM_CODEX_API_KEY", "")
+        self.custom_codex_model = os.getenv("CUSTOM_CODEX_MODEL", "gpt-5.5")
 
         self.ollama_fast_model = os.getenv("OLLAMA_FAST_MODEL", "ministral-3:3b-cloud")
         self.ollama_legacy_fast_model = os.getenv("OLLAMA_LEGACY_FAST_MODEL", "qwen3.5:cloud")
@@ -246,6 +247,18 @@ class Config:
         }
         self.ai_shell_timeout = max(5, min(int(self._env_float("AI_SHELL_TIMEOUT", 15.0)), 60))
         self.ai_shell_max_output = max(500, min(int(self._env_float("AI_SHELL_MAX_OUTPUT", 4000.0)), 10000))
+
+        # --- Auto backup ---
+        self.enable_auto_backup = os.getenv("ENABLE_AUTO_BACKUP", "true").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self.auto_backup_interval_hours = max(
+            0.1,
+            min(float(os.getenv("AUTO_BACKUP_INTERVAL_HOURS", "1.0")), 24.0),
+        )
 
         # --- Dynamic config ---
         self._routing_rules = None

@@ -531,7 +531,7 @@ class Brain:
             raise ValueError("CUSTOM_CODEX_BASE_URL and CUSTOM_CODEX_API_KEY are required for custom_codex/* models")
 
         response = await litellm.acompletion(
-            model=f"openai/{model}",
+            model=f"openai/{self.config.custom_codex_model}",
             messages=messages,
             max_tokens=4096,
             temperature=0.7,
@@ -553,7 +553,7 @@ class Brain:
             raise ValueError("CUSTOM_CODEX_BASE_URL and CUSTOM_CODEX_API_KEY are required for custom_codex/* models")
 
         stream = await litellm.acompletion(
-            model=f"openai/{model}",
+            model=f"openai/{self.config.custom_codex_model}",
             messages=messages,
             max_tokens=4096,
             temperature=0.7,
