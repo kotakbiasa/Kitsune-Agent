@@ -199,6 +199,8 @@ class KitsuneBot:
         router.message.register(self._cmd_reset, Command("reset"))
         router.message.register(self._handle_document_message, F.document)
         router.message.register(self._handle_photo_message, F.photo)
+        router.message.register(self._handle_sticker, F.sticker)
+        router.message.register(self._handle_unsupported_media, F.video | F.voice | F.audio | F.animation)
         # Group mention/reply handlers FIRST so they take priority over _handle_message
         router.message.register(
             self._handle_group_mention,
@@ -1071,6 +1073,28 @@ class KitsuneBot:
             file_id=photo.file_id,
             filename=f"photo_{photo.file_unique_id}.jpg",
             size_bytes=photo.file_size or 0,
+        )
+
+    async def _handle_sticker(self, message: Message):
+        user = message.from_user
+        if not user or not self._is_message_authorized(message):
+            return
+        sticker = message.sticker
+        if not sticker:
+            return
+        emoji = sticker.emoji or "🦊"
+        await self._safe_answer(
+            message,
+            f"{emoji} Sticker lucu! Sayangnya aku belum bisa baca isi sticker, tapi aku siap bantu kalau ada yang lain."
+        )
+
+    async def _handle_unsupported_media(self, message: Message):
+        user = message.from_user
+        if not user or not self._is_message_authorized(message):
+            return
+        await self._safe_answer(
+            message,
+            "🎬 Media ini belum bisa aku proses. Coba kirim teks, foto, atau dokumen ya!"
         )
 
     async def _download_and_inspect_telegram_file(
