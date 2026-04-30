@@ -178,7 +178,6 @@ class KitsuneBot:
         router.message.register(self._cmd_improve, Command("improve"))
         router.message.register(self._cmd_improvements, Command("improvements"))
         router.message.register(self._cmd_health, Command("health"))
-        router.message.register(self._cmd_personality, Command("personality"))
         router.message.register(self._cmd_whoami, Command("whoami"))
         router.message.register(self._cmd_intro, Command("intro"))
         router.message.register(self._cmd_config, Command("config"))
@@ -281,7 +280,6 @@ class KitsuneBot:
             "/terminal <command> — Jalankan perintah shell (owner only)\n"
             "/improve <ide/masalah> — Buat proposal patch aman untuk direview\n"
             "/improvements — Lihat proposal improvement terbaru\n"
-            "/personality <deskripsi> — Ubah gaya/bot personality\n"
             "/forget — Hapus semua memori tentangmu\n"
             "/reset — Reset percakapan saat ini\n\n"
             "💡 **Tips:**\n"
@@ -289,7 +287,7 @@ class KitsuneBot:
             "• Kirim document/photo untuk cek jenis file dan membaca preview teks\n"
             "• Bilang 'buatkan script Python untuk X' — bot otomatis generate & kirim file\n"
             "• Bilang 'gunakan deepseek' — ganti model secara langsung\n"
-            "• Bilang 'kita jadi sarkas' — ubah personality bot"
+            "• Bilang 'jadi lebih santai' atau 'kamu terlalu formal' — otomatis ubah gaya bot"
         )
         await self._safe_answer(message, help_text, parse_mode=ParseMode.MARKDOWN)
 
@@ -536,39 +534,6 @@ class KitsuneBot:
         if not self._is_owner_message(message):
             return
         await self._safe_answer(message, self.health_monitor.get_summary(), parse_mode=ParseMode.MARKDOWN)
-
-    async def _cmd_personality(self, message: Message):
-        user = message.from_user
-        if not user or not self._is_message_authorized(message):
-            return
-
-        args = self._command_args(message)
-        if not args:
-            current = self.memory.get_user_personality(user.id)
-            if current:
-                await self._safe_answer(
-                    message,
-                    f"🎭 **Personality saat ini:**\n\n_{current[:400]}_\n\n"
-                    f"Ketik `/personality <deskripsi>` untuk mengubah, "
-                    f"atau *'reset personality'* untuk menghapus.",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-            else:
-                await self._safe_answer(
-                    message,
-                    "🎭 Belum ada personality custom.\n\n"
-                    "Ketik `/personality <deskripsi>` untuk mengatur.\n"
-                    "Contoh: `/personality jadi asisten yang sarkas tapi pintar`",
-                )
-            return
-
-        self.memory.set_user_personality(user.id, args)
-        await self._safe_answer(
-            message,
-            f"✅ Personality diubah! Sekarang aku akan berperilaku seperti:\n\n_{args[:400]}_",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        logger.info("🎭 User %d set personality via /personality: %s", user.id, args[:100])
 
     async def _cmd_whoami(self, message: Message):
         user = message.from_user
@@ -1280,29 +1245,23 @@ class KitsuneBot:
                 fallback_model = []  # No fallback when user explicitly chose
                 logger.info("🔄 Using user-override model %s for user %d", override, user.id)
 
-            # Check for personality change request
-            requested_personality = self._detect_personality_request(text)
+            # Check for conversational personality hints
+            requested_personality = self._detect_personality_change(text, user.id)
             if requested_personality:
                 self.memory.set_user_personality(user.id, requested_personality)
-                await self._safe_answer(
-                    message,
-                    f"✅ Personality diubah! Sekarang aku akan berperilaku seperti:\n\n"
-                    f"_{requested_personality[:300]}_\n\n"
-                    f"Ketik *'reset personality'* untuk kembali ke default.",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-                logger.info("🎭 User %d set personality: %s", user.id, requested_personality[:100])
-                return
+                # Respond naturally as if discussing, not as a system confirmation
+                await self._safe_answer(message, "Oke, noted! 📝")
+                logger.info("🎭 User %d personality auto-detected: %s", user.id, requested_personality[:100])
+                # Continue processing the original message, not return
 
             if self._detect_personality_reset(text):
                 old = self.memory.get_user_personality(user.id)
                 if old:
-                    # Clear by storing empty personality
                     self.memory.set_user_personality(user.id, "")
-                    await self._safe_answer(message, "🎭 Personality direset ke default! 🦊")
+                    await self._safe_answer(message, "Oke, balik normal lagi ya! 🦊")
                     logger.info("🎭 User %d reset personality", user.id)
                 else:
-                    await self._safe_answer(message, "Tidak ada personality custom yang aktif.")
+                    await self._safe_answer(message, "Belum ada gaya khusus yang aku pake sih.")
                 return
 
             # Build personality context for this user
@@ -1480,6 +1439,12 @@ class KitsuneBot:
                 primary_model = override
                 fallback_model = []
                 logger.info("🔄 Using user-override model %s for user %d in group", override, user.id)
+
+            # Check for conversational personality hints in group
+            requested_personality = self._detect_personality_change(extracted_text, user.id)
+            if requested_personality:
+                self.memory.set_user_personality(user.id, requested_personality)
+                logger.info("🎭 User %d personality auto-detected in group: %s", user.id, requested_personality[:100])
 
             personality_context = self._get_personality_context(user.id)
             memory_context = "\n\n".join(
@@ -1754,30 +1719,86 @@ class KitsuneBot:
         personality = self.memory.get_user_personality(user_id)
         return personality
 
-    @staticmethod
-    def _detect_personality_request(text: str) -> str | None:
-        """Detect natural-language personality change requests. Returns new personality or None."""
+    def _detect_personality_change(self, text: str, user_id: int) -> str | None:
+        """Detect conversational personality hints from normal chat."""
         text_lower = text.lower().strip()
-        patterns = [
-            r"\b(?:personality|persona|karakter|sifat|gaya)\s*[:=]\s*(.+?)(?:\.|$)",
-            r"\b(?:jadi|kita jadi|aku mau|aku ingin|buat)\s+(?:bot\s+)?(?:jadi|menjadi|ber|punya|dengan)\s+(.+?)(?:\.|$)",
-            r"\b(?:ganti|ubah)\s+(?:personality|persona|karakter|gaya)\s+(?:jadi|menjadi|ke)\s+(.+?)(?:\.|$)",
+
+        # Skip if user is just asking about the bot's nature
+        if any(k in text_lower for k in ("siapa kamu", "kamu siapa", "who are you", "apa itu")):
+            return None
+
+        # Pattern: direct behavioral feedback / request
+        feedback_patterns = [
+            r"\b(?:jadi|buat)\s+(?:kamu|lu|kau|elmu|elo|loe|bot)\s+(?:jadi|menjadi|ber|lebih|agak|sedikit)\s+(.{5,200})\b",
+            r"\b(?:kamu|lu|kau|elmu|elo|loe|bot)\s+(?:harus|mesti|sebaiknya|coba|tolong)\s+(?:jadi|menjadi|ber|lebih|agak|sedikit)\s+(.{5,200})\b",
+            r"\b(?:kamu|lu|kau|elmu|elo|loe|bot)\s+(?:terlalu|kelewatan|kurang)\s+(.{3,120})\b",
+            r"\b(?:kamu|lu|kau|elmu|elo|loe|bot)\s+(?:itu|nya|ini)\s+(?:terlalu|kelewatan|kurang)\s+(.{3,120})\b",
+            r"\b(?:lebih|jadi)\s+(.{5,200})\s+(?:dong|deh|ya|sih|lah)\b",
+            r"\b(?:santai|formal|serius|lucu|humor|sarkas|galak|lembut|ramah|dingin|hangat|cepat|lambat|pendek|panjang|detail|singkat)\s+(?:dong|deh|ya|sih|lah|aja|saja)\b",
         ]
-        for pattern in patterns:
-            match = re.search(pattern, text_lower, re.DOTALL)
+
+        for pattern in feedback_patterns:
+            match = re.search(pattern, text_lower)
             if match:
-                personality = match.group(1).strip()
-                if len(personality) > 3 and len(personality) < 500:
-                    return personality
+                trait = match.group(1).strip(" .,;!?")
+                # Build a full personality description from the trait
+                return self._build_personality_from_trait(trait, user_id)
+
+        # Pattern: single-word/adjective personality hints
+        single_trait_patterns = [
+            r"\b(?:kamu|lu|kau|elmu|elo|loe|bot)\s+(?:jadi|menjadi|ber|lebih)\s+(.{3,80})\b",
+        ]
+        for pattern in single_trait_patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                trait = match.group(1).strip(" .,;!?")
+                return self._build_personality_from_trait(trait, user_id)
+
         return None
 
     @staticmethod
+    def _build_personality_from_trait(trait: str, user_id: int) -> str:
+        """Expand a short trait into a fuller personality description."""
+        trait_lower = trait.lower()
+
+        # Known trait expansions
+        expansions = {
+            "santai": "Berperilaku santai, casual, dan tidak kaku. Gunakan bahasa sehari-hari.",
+            "formal": "Berperilaku formal, sopan, dan profesional. Gunakan bahasa baku.",
+            "serius": "Berperilaku serius dan fokus pada fakta. Hindari lelucon.",
+            "lucu": "Berperilaku lucu dan humoris. Boleh bercanda sesekali.",
+            "humor": "Berperilaku lucu dan humoris. Boleh bercanda sesekali.",
+            "humoris": "Berperilaku lucu dan humoris. Boleh bercanda sesekali.",
+            "sarkas": "Berperilaku sarkastik tapi tetap membantu. Gunakan sindiran halus.",
+            "sarkastik": "Berperilaku sarkastik tapi tetap membantu. Gunakan sindiran halus.",
+            "galak": "Berperilaku tegas dan galak, tapi tetap membantu.",
+            "lembut": "Berperilaku lembut, sabar, dan penuh perhatian.",
+            "ramah": "Berperilaku ramah, hangat, dan menyambut.",
+            "dingin": "Berperilaku tenang, objektif, dan tidak terlalu ekspresif.",
+            "hangat": "Berperilaku hangat, ramah, dan penuh empati.",
+            "cepat": "Berikan jawaban singkat, padat, dan langsung ke inti.",
+            "lambat": "Berikan jawaban detail dan teliti, tidak terburu-buru.",
+            "pendek": "Jawaban singkat dan padat, maksimal 2-3 kalimat.",
+            "panjang": "Jawaban detail dan komprehensif, jelaskan secara menyeluruh.",
+            "detail": "Berikan jawaban yang sangat detail dengan contoh dan penjelasan mendalam.",
+            "singkat": "Jawaban singkat dan padat, maksimal 2-3 kalimat.",
+        }
+
+        for key, expansion in expansions.items():
+            if key in trait_lower:
+                return expansion
+
+        # Fallback: build a generic description
+        return f"Berperilaku {trait}. Sesuaikan gaya komunikasi dengan deskripsi ini."
+
+    @staticmethod
     def _detect_personality_reset(text: str) -> bool:
-        """Detect personality reset requests."""
+        """Detect personality reset requests in conversation."""
         text_lower = text.lower().strip()
         return bool(re.search(
-            r"\b(?:reset|hapus|batal|kembali|default)\s+(?:personality|persona|karakter|gaya)\b|"
-            r"\b(?:balik|kembali)\s+ke\s+(?:default|awal|normal)\b",
+            r"\b(?:reset|hapus|batal|kembali|default|normal|awal)\s+(?:personality|persona|karakter|gaya|sifat|tingkah)\b|"
+            r"\b(?:balik|kembali)\s+ke\s+(?:default|awal|normal|semula)\b|"
+            r"\b(?:jadi)\s+(?:normal|default|awal|semula)\s+(?:lagi|aja|saja)\b",
             text_lower,
         ))
 
