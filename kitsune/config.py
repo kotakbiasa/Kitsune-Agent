@@ -142,6 +142,8 @@ class Config:
             os.environ["GEMINI_API_KEY"] = self.gemini_api_key
         if self.ollama_api_key:
             os.environ["OLLAMA_API_KEY"] = self.ollama_api_key
+        if self.ollama_api_base:
+            os.environ["OLLAMA_API_BASE"] = self.ollama_api_base
 
         # --- Logging ---
         self.log_level = os.getenv("LOG_LEVEL", "INFO")
