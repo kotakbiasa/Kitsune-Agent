@@ -115,6 +115,8 @@ class KitsuneBot:
 
         self.bot: Bot | None = None
         self.dp: Dispatcher | None = None
+        self._bot_username: str | None = None
+        self._bot_id: int | None = None
 
     def run(self):
         """Start aiogram polling."""
@@ -130,6 +132,17 @@ class KitsuneBot:
             default=DefaultBotProperties(parse_mode=None),
         )
         self.dp = Dispatcher()
+
+        # Fetch bot info for mention detection
+        try:
+            bot_info = await self.bot.get_me()
+            self._bot_username = bot_info.username
+            self._bot_id = bot_info.id
+            logger.info("🤖 Bot @%s (id=%d) ready", self._bot_username, self._bot_id)
+        except Exception as e:
+            logger.warning("Could not fetch bot info: %s", e)
+            self._bot_username = None
+            self._bot_id = None
 
         router = AiogramRouter()
         self._register_handlers(router)
@@ -181,6 +194,15 @@ class KitsuneBot:
             self._handle_message,
             F.text,
             lambda message: bool(message.text and not message.text.startswith("/")),
+        )
+        # Group mention/reply handlers
+        router.message.register(
+            self._handle_group_mention,
+            F.text,
+            lambda message: bool(
+                message.text
+                and message.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}
+            ),
         )
         router.callback_query.register(self._feedback_callback)
         router.errors.register(self._error_handler)
@@ -1326,6 +1348,188 @@ class KitsuneBot:
 
         except Exception as e:
             await self._handle_message_error(message, text, user, hist_key, e)
+
+    async def _handle_group_mention(self, message: Message):
+        """Handle @bot mentions and replies to bot in groups."""
+        user = message.from_user
+        if not user or not self._is_message_authorized(message):
+            return
+
+        # Must be a group
+        if message.chat.type not in {ChatType.GROUP, ChatType.SUPERGROUP}:
+            return
+
+        text = message.text or ""
+        if not text.strip():
+            return
+
+        is_reply_to_bot = False
+        is_mention = False
+        extracted_text = text.strip()
+
+        # Check if this is a reply to bot's message
+        if message.reply_to_message and self._bot_id is not None:
+            reply_from = message.reply_to_message.from_user
+            if reply_from and reply_from.id == self._bot_id:
+                is_reply_to_bot = True
+
+        # Check if bot is mentioned (@username)
+        if self._bot_username and f"@{self._bot_username}" in text:
+            is_mention = True
+            # Remove mention from text
+            extracted_text = text.replace(f"@{self._bot_username}", "").strip()
+            # Also remove leading/trailing punctuation around mention
+            extracted_text = re.sub(rf"\b@{re.escape(self._bot_username)}\b[\s:;,.​]*", "", text).strip()
+
+        if not is_reply_to_bot and not is_mention:
+            return
+
+        # Skip if extracted text is empty after removing mention
+        if not extracted_text:
+            extracted_text = "..."
+
+        logger.info("📩 Group mention/reply from %s (%d): %s", user.first_name, user.id, extracted_text[:100])
+
+        interaction_id = f"int_{uuid.uuid4().hex[:12]}"
+        hist_key = self._history_key(message)
+        user_name = self._get_user_name(user.id)
+
+        try:
+            await self._safe_send_chat_action(message)
+
+            # Check implicit signals
+            if await self._check_implicit_signals(user.id, extracted_text):
+                pass
+            self._last_user_message[user.id] = extracted_text
+
+            task_category, _ = await self.router.classify_task(extracted_text)
+            primary_model, fallback_model = self.router.get_model_for_task(task_category)
+
+            # Apply model override if present
+            override = self._user_model_override.get(user.id)
+            if override:
+                primary_model = override
+                fallback_model = []
+                logger.info("🔄 Using user-override model %s for user %d in group", override, user.id)
+
+            memory_context = "\n\n".join(
+                part
+                for part in [
+                    self.learner.get_user_profile_context(user.id),
+                    self.memory.get_user_context(user.id, extracted_text),
+                ]
+                if part
+            )
+            history = self._chat_history.get(hist_key, [])
+
+            if self.config.enable_streaming:
+                response = await self._stream_response(
+                    message=message,
+                    user_message=extracted_text,
+                    model=primary_model,
+                    fallback_model=fallback_model,
+                    memory_context=memory_context,
+                    conversation_history=history,
+                    user_name=user_name,
+                )
+            else:
+                response = await self.brain.think(
+                    user_message=extracted_text,
+                    model=primary_model,
+                    fallback_model=fallback_model,
+                    memory_context=memory_context,
+                    conversation_history=history,
+                    user_name=user_name,
+                )
+
+            self._chat_history.setdefault(hist_key, [])
+            self._chat_history[hist_key].append({"role": "user", "content": extracted_text})
+            self._chat_history[hist_key].append({"role": "assistant", "content": response.content})
+            if len(self._chat_history[hist_key]) > 20:
+                self._chat_history[hist_key] = self._chat_history[hist_key][-20:]
+
+            # Send as threaded reply
+            await self._send_or_finalize_response_group(message, response, task_category, interaction_id)
+
+            self._store_response_meta(
+                user_id=user.id,
+                model_used=response.model_used,
+                task_category=task_category,
+                response_text=response.content,
+                response_time=response.response_time,
+            )
+
+            learning_args = dict(
+                user_id=user.id,
+                user_message=extracted_text,
+                bot_response=response.content,
+                task_category=task_category,
+                model_used=response.model_used,
+                response_time=response.response_time,
+                response_success=self.learner.assess_response_success(response.content, response.success),
+                interaction_id=interaction_id,
+                error_type=response.error_type,
+            )
+            if self.config.background_learning:
+                asyncio.create_task(self._learn_after_response(**learning_args))
+            else:
+                await self._learn_after_response(**learning_args)
+
+        except Exception as e:
+            await self._handle_message_error(message, extracted_text, user, hist_key, e)
+
+    async def _send_or_finalize_response_group(
+        self,
+        message: Message,
+        response: BrainResponse,
+        task_category: str,
+        interaction_id: str | None,
+    ):
+        """Same as _send_or_finalize_response but sends as a threaded reply."""
+        model_short = response.model_used.split("/")[-1] if "/" in response.model_used else response.model_used
+        footer = f"\n\n`🤖 {model_short} | 📋 {task_category} | ⏱ {response.response_time}s`"
+        keyboard = self._build_feedback_keyboard()
+
+        stream_message = getattr(response, "_telegram_message", None)
+        chunks = self._split_text(response.content, 4096)
+
+        reply_kwargs = {"reply_to_message_id": message.message_id}
+
+        if len(chunks) == 1 and len(chunks[0]) + len(footer) <= 4096:
+            reply_text = chunks[0] + footer
+            if stream_message:
+                try:
+                    await stream_message.edit_text(
+                        text=reply_text,
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=keyboard,
+                    )
+                except TelegramBadRequest:
+                    await self._safe_edit_text(stream_message, reply_text, reply_markup=keyboard)
+                self._try_register_feedback_meta(stream_message, message, response, task_category, interaction_id)
+                return
+
+            sent = await self._safe_answer(message, reply_text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard, **reply_kwargs)
+            self._try_register_feedback_meta(sent, message, response, task_category, interaction_id)
+            return
+
+        # Multi-chunk: send chunks 1..N-1 plain, last chunk with footer + keyboard
+        if stream_message:
+            try:
+                await stream_message.edit_text(text=chunks[0], parse_mode=ParseMode.MARKDOWN)
+            except TelegramBadRequest:
+                await self._safe_edit_text(stream_message, chunks[0])
+
+        for idx, chunk in enumerate(chunks):
+            if stream_message and idx == 0:
+                continue
+            is_last = idx == len(chunks) - 1
+            text = chunk + footer if is_last else chunk
+            markup = keyboard if is_last else None
+            kwargs = {"parse_mode": ParseMode.MARKDOWN if not is_last else None, "reply_markup": markup, **reply_kwargs}
+            sent = await self._safe_answer(message, text, **kwargs)
+            if is_last:
+                self._try_register_feedback_meta(sent, message, response, task_category, interaction_id)
 
     async def _on_reminder_trigger(self, reminder):
         if not self.bot:
