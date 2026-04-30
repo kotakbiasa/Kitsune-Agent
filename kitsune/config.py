@@ -71,7 +71,6 @@ class Config:
 
         # --- LLM API Keys ---
         self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "")
-        self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
         self.ollama_api_key = os.getenv("OLLAMA_API_KEY", "")
@@ -137,8 +136,6 @@ class Config:
         # Set keys in environment for LiteLLM
         if self.openrouter_api_key:
             os.environ["OPENROUTER_API_KEY"] = self.openrouter_api_key
-        if self.openai_api_key:
-            os.environ["OPENAI_API_KEY"] = self.openai_api_key
         if self.anthropic_api_key:
             os.environ["ANTHROPIC_API_KEY"] = self.anthropic_api_key
         if self.gemini_api_key:
@@ -273,8 +270,6 @@ class Config:
         providers = []
         if self.openrouter_api_key:
             providers.append("openrouter")
-        if self.openai_api_key:
-            providers.append("openai")
         if self.anthropic_api_key:
             providers.append("anthropic")
         if self.gemini_api_key:
@@ -433,7 +428,7 @@ DEFAULT_ROUTING_RULES = {
         "complex_reasoning": {
             "description": "Analysis, comparison, multi-step reasoning",
             "primary_model": "anthropic/claude-opus-4-6-20251001",
-            "fallback_model": "openai/gpt-5.4",
+            "fallback_model": "gemini/gemini-2.5-pro-002",
             "success_count": 0,
             "fail_count": 0,
             "total_uses": 0,
@@ -441,7 +436,7 @@ DEFAULT_ROUTING_RULES = {
         },
         "coding": {
             "description": "Code generation, debugging, code review",
-            "primary_model": "openai/gpt-5.3-codex",
+            "primary_model": "anthropic/claude-sonnet-4-20250514",
             "fallback_model": "ollama/deepseek-3.2",
             "success_count": 0,
             "fail_count": 0,
@@ -451,7 +446,7 @@ DEFAULT_ROUTING_RULES = {
         "creative_writing": {
             "description": "Stories, poems, creative content",
             "primary_model": "anthropic/claude-sonnet-4-5-20251001",
-            "fallback_model": "openai/gpt-5.2",
+            "fallback_model": "gemini/gemini-2.5-flash-002",
             "success_count": 0,
             "fail_count": 0,
             "total_uses": 0,
@@ -459,7 +454,7 @@ DEFAULT_ROUTING_RULES = {
         },
         "math": {
             "description": "Mathematical calculations, proofs, equations",
-            "primary_model": "openai/gpt-5.4",
+            "primary_model": "anthropic/claude-opus-4-6-20251001",
             "fallback_model": "ollama/deepseek-v3-2-volc",
             "success_count": 0,
             "fail_count": 0,
@@ -469,7 +464,7 @@ DEFAULT_ROUTING_RULES = {
         "translation": {
             "description": "Language translation tasks",
             "primary_model": "gemini/gemini-3.1-flash-lite-002",
-            "fallback_model": "openai/gpt-4o-mini",
+            "fallback_model": "anthropic/claude-haiku-4-5-20251001",
             "success_count": 0,
             "fail_count": 0,
             "total_uses": 0,
@@ -477,8 +472,8 @@ DEFAULT_ROUTING_RULES = {
         },
         "summarization": {
             "description": "Summarizing text, documents, articles",
-            "primary_model": "openai/gpt-5.2",
-            "fallback_model": "anthropic/claude-sonnet-4-5-20251001",
+            "primary_model": "anthropic/claude-sonnet-4-5-20251001",
+            "fallback_model": "gemini/gemini-2.5-flash-002",
             "success_count": 0,
             "fail_count": 0,
             "total_uses": 0,
@@ -487,7 +482,7 @@ DEFAULT_ROUTING_RULES = {
         "web_search": {
             "description": "Web search for real-time information",
             "primary_model": "anthropic/claude-opus-4-6-20251001",
-            "fallback_model": "openai/gpt-5.4",
+            "fallback_model": "gemini/gemini-2.5-pro-002",
             "success_count": 0,
             "fail_count": 0,
             "total_uses": 0,
@@ -496,7 +491,7 @@ DEFAULT_ROUTING_RULES = {
         "multimodal": {
             "description": "Image/video understanding and generation",
             "primary_model": "gemini/gemini-2.5-pro-002",
-            "fallback_model": "openai/gpt-5.4",
+            "fallback_model": "anthropic/claude-opus-4-6-20251001",
             "success_count": 0,
             "fail_count": 0,
             "total_uses": 0,

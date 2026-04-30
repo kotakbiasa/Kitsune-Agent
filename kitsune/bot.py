@@ -1758,7 +1758,7 @@ class KitsuneBot:
         is_llm_error = any(k in error_lower for k in (
             "timeout", "rate limit", "ratelimit", "context length",
             "token limit", "authentication", "unauthorized", "401", "403",
-            "litellm", "openai", "anthropic", "gemini", "openrouter",
+            "litellm", "anthropic", "gemini", "openrouter",
         ))
         is_telegram_error = "telegram" in error_lower or "bad request" in error_lower
         is_too_long = "message is too long" in error_lower

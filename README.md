@@ -41,7 +41,6 @@ OWNER_USER_IDS=123456789
 # LLM API Keys (pilih salah satu atau semua)
 OLLAMA_API_KEY=your_ollama_key
 OPENROUTER_API_KEY=your_openrouter_key
-OPENAI_API_KEY=your_openai_key
 ANTHROPIC_API_KEY=your_anthropic_key
 GEMINI_API_KEY=your_gemini_key
 

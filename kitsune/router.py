@@ -263,7 +263,6 @@ class Router:
         provider_map = {
             "ollama/": "ollama",
             "openrouter/": "openrouter",
-            "openai/": "openai",
             "anthropic/": "anthropic",
             "gemini/": "gemini",
         }
