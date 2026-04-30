@@ -200,8 +200,11 @@ class KitsuneBot:
         router.message.register(self._cmd_reset, Command("reset"))
         router.message.register(self._handle_document_message, F.document)
         router.message.register(self._handle_photo_message, F.photo)
+        router.message.register(self._handle_audio_message, F.audio)
+        router.message.register(self._handle_voice_message, F.voice)
+        router.message.register(self._handle_video_message, F.video)
+        router.message.register(self._handle_animation_message, F.animation)
         router.message.register(self._handle_sticker, F.sticker)
-        router.message.register(self._handle_unsupported_media, F.video | F.voice | F.audio | F.animation)
         # Group mention/reply handlers FIRST so they take priority over _handle_message
         router.message.register(
             self._handle_group_mention,
@@ -1089,13 +1092,72 @@ class KitsuneBot:
             f"{emoji} Sticker lucu! Sayangnya aku belum bisa baca isi sticker, tapi aku siap bantu kalau ada yang lain."
         )
 
-    async def _handle_unsupported_media(self, message: Message):
+    async def _handle_audio_message(self, message: Message):
         user = message.from_user
         if not user or not self._is_message_authorized(message):
+            await self._safe_answer(message, "⛔ Maaf, kamu tidak punya akses ke bot ini.")
             return
-        await self._safe_answer(
-            message,
-            "🎬 Media ini belum bisa aku proses. Coba kirim teks, foto, atau dokumen ya!"
+        audio = message.audio
+        if not audio:
+            return
+        meta = {"type": "Audio", "duration": audio.duration, "title": audio.title, "performer": audio.performer}
+        await self._download_and_inspect_telegram_file(
+            message=message,
+            file_id=audio.file_id,
+            filename=audio.file_name or f"audio_{audio.file_unique_id}.mp3",
+            size_bytes=audio.file_size or 0,
+            media_meta=meta,
+        )
+
+    async def _handle_voice_message(self, message: Message):
+        user = message.from_user
+        if not user or not self._is_message_authorized(message):
+            await self._safe_answer(message, "⛔ Maaf, kamu tidak punya akses ke bot ini.")
+            return
+        voice = message.voice
+        if not voice:
+            return
+        meta = {"type": "Voice", "duration": voice.duration}
+        await self._download_and_inspect_telegram_file(
+            message=message,
+            file_id=voice.file_id,
+            filename=f"voice_{voice.file_unique_id}.ogg",
+            size_bytes=voice.file_size or 0,
+            media_meta=meta,
+        )
+
+    async def _handle_video_message(self, message: Message):
+        user = message.from_user
+        if not user or not self._is_message_authorized(message):
+            await self._safe_answer(message, "⛔ Maaf, kamu tidak punya akses ke bot ini.")
+            return
+        video = message.video
+        if not video:
+            return
+        meta = {"type": "Video", "duration": video.duration, "width": video.width, "height": video.height}
+        await self._download_and_inspect_telegram_file(
+            message=message,
+            file_id=video.file_id,
+            filename=video.file_name or f"video_{video.file_unique_id}.mp4",
+            size_bytes=video.file_size or 0,
+            media_meta=meta,
+        )
+
+    async def _handle_animation_message(self, message: Message):
+        user = message.from_user
+        if not user or not self._is_message_authorized(message):
+            await self._safe_answer(message, "⛔ Maaf, kamu tidak punya akses ke bot ini.")
+            return
+        anim = message.animation
+        if not anim:
+            return
+        meta = {"type": "Animation", "duration": anim.duration, "width": anim.width, "height": anim.height}
+        await self._download_and_inspect_telegram_file(
+            message=message,
+            file_id=anim.file_id,
+            filename=anim.file_name or f"animation_{anim.file_unique_id}.gif",
+            size_bytes=anim.file_size or 0,
+            media_meta=meta,
         )
 
     async def _download_and_inspect_telegram_file(
@@ -1104,6 +1166,7 @@ class KitsuneBot:
         file_id: str,
         filename: str,
         size_bytes: int,
+        media_meta: dict | None = None,
     ):
         max_bytes = self.config.telegram_file_read_max_bytes
         if size_bytes and size_bytes > max_bytes:
@@ -1155,15 +1218,16 @@ class KitsuneBot:
         )
 
         if inspection.is_text and inspection.preview:
-            await self._answer_from_uploaded_file(message, inspection, caption)
+            await self._answer_from_uploaded_file(message, inspection, caption, media_meta)
             return
 
         # For images and other non-text files, send file info + caption to AI
-        if inspection.kind == "Image" or caption:
+        if inspection.kind == "Image" or caption or media_meta:
             await self._answer_from_uploaded_file(
                 message,
                 inspection,
                 caption or "Tolong analisis atau berikan respons tentang file ini.",
+                media_meta,
             )
             return
 
@@ -1173,7 +1237,7 @@ class KitsuneBot:
         identity = self.memory.get_user_identity(user_id)
         return identity.get("nickname") or identity.get("name")
 
-    async def _answer_from_uploaded_file(self, message: Message, inspection, caption: str):
+    async def _answer_from_uploaded_file(self, message: Message, inspection, caption: str, media_meta: dict | None = None):
         user = message.from_user
         if not user:
             return
@@ -1183,12 +1247,17 @@ class KitsuneBot:
         user_name = self._get_user_name(user.id)
         request = caption or "Baca file ini, jelaskan jenis file, isi pentingnya, dan hal yang perlu diperhatikan."
         file_context = inspection.preview[: self.config.file_context_max_chars]
+        meta_lines = ""
+        if media_meta:
+            meta_lines = "\n".join(f"{k}: {v}" for k, v in media_meta.items() if v is not None)
+            meta_lines = f"\nMetadata media:\n{meta_lines}\n"
         file_prompt = (
             f"User mengirim file Telegram.\n"
             f"Nama/path: {inspection.display_path}\n"
             f"Jenis: {inspection.kind}\n"
             f"MIME: {inspection.mime_type}\n"
-            f"Ukuran: {format_size(inspection.size_bytes)}\n\n"
+            f"Ukuran: {format_size(inspection.size_bytes)}"
+            f"{meta_lines}\n\n"
             f"Permintaan user: {request}\n\n"
             f"Isi file yang bisa dibaca:\n"
             f"```text\n{file_context}\n```"
