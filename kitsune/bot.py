@@ -30,6 +30,7 @@ from kitsune.config import Config
 from kitsune.health import HealthMonitor
 from kitsune.learner import Learner
 from kitsune.memory import MemorySystem
+from kitsune.model_utils import pick_fast_model
 from kitsune.reminder import ReminderSystem
 from kitsune.router import Router
 from kitsune.search import WebSearch, SearchTool
@@ -1286,13 +1287,7 @@ class KitsuneBot:
                 await self._learn_after_response(**learning_args)
 
         except Exception as e:
-            logger.error("Error handling message: %s\n%s", e, traceback.format_exc())
-            await self._safe_answer(
-                message,
-                "😅 Maaf, terjadi error. Coba lagi ya!\n"
-                f"Error: `{html.escape(str(e)[:200])}`",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+            await self._handle_message_error(message, text, user, hist_key, e)
 
     async def _on_reminder_trigger(self, reminder):
         if not self.bot:
@@ -1306,7 +1301,135 @@ class KitsuneBot:
             logger.warning("Failed to send reminder: %s", e)
 
     async def _error_handler(self, event):
-        logger.error("Unhandled aiogram exception: %s", event.exception, exc_info=event.exception)
+        exc = event.exception
+        logger.error("Unhandled aiogram exception: %s", exc, exc_info=exc)
+
+        # Auto-generate improvement proposal for unhandled exceptions
+        if self.self_improver:
+            try:
+                self.self_improver.record_negative_feedback(
+                    user_id=0,
+                    user_message="[aiogram unhandled error]",
+                    bot_response=str(exc)[:500],
+                    task_category="system",
+                    model_used="none",
+                )
+            except Exception:
+                pass
+
+    async def _handle_message_error(
+        self,
+        message: Message,
+        user_message: str,
+        user,
+        hist_key: tuple[int, int],
+        error: Exception,
+    ):
+        """Self-healing error recovery for message handling failures."""
+        error_msg = str(error)
+        error_lower = error_msg.lower()
+        exc_type = type(error).__name__
+
+        logger.error("Error handling message: %s\n%s", error, traceback.format_exc())
+
+        # Classify error
+        is_llm_error = any(k in error_lower for k in (
+            "timeout", "rate limit", "ratelimit", "context length",
+            "token limit", "authentication", "unauthorized", "401", "403",
+            "litellm", "openai", "anthropic", "gemini", "openrouter",
+        ))
+        is_telegram_error = "telegram" in error_lower or "bad request" in error_lower
+        is_too_long = "message is too long" in error_lower
+
+        # Strategy 1: Telegram message too long — ultimate fallback truncation
+        if is_too_long:
+            try:
+                truncated = user_message[:3950]
+                await self._safe_answer(
+                    message,
+                    truncated + "\n\n...[respons terlalu panjang, dipotong]",
+                )
+                return
+            except Exception:
+                pass
+
+        # Strategy 2: LLM error — auto-retry once with fastest available model
+        if is_llm_error and not is_telegram_error:
+            try:
+                logger.info("🔄 Auto-retrying with fast model due to: %s", exc_type)
+                fast_model = pick_fast_model(self.config)
+                history = self._chat_history.get(hist_key, [])
+                retry_response = await self.brain.think(
+                    user_message=user_message,
+                    model=fast_model,
+                    fallback_model=[],
+                    memory_context="",
+                    conversation_history=history,
+                    user_name=user.first_name if user else None,
+                )
+                if retry_response.success:
+                    await self._send_or_finalize_response(message, retry_response, "simple_qa", None)
+                    self._chat_history.setdefault(hist_key, [])
+                    self._chat_history[hist_key].append({"role": "user", "content": user_message})
+                    self._chat_history[hist_key].append({"role": "assistant", "content": retry_response.content})
+                    if len(self._chat_history[hist_key]) > 20:
+                        self._chat_history[hist_key] = self._chat_history[hist_key][-20:]
+                    logger.info("✅ Auto-retry with %s succeeded", fast_model)
+                    return
+            except Exception as retry_err:
+                logger.warning("Auto-retry failed: %s", retry_err)
+
+        # Strategy 3: Record error for learning and routing optimization
+        try:
+            error_type = self.brain._classify_error(error)
+        except Exception:
+            error_type = "unknown"
+        try:
+            self.router.record_result(
+                task_category="unknown",
+                model_used="none",
+                success=False,
+                response_time=0.0,
+                error_type=error_type,
+            )
+        except Exception:
+            pass
+
+        # Strategy 4: Auto-generate improvement proposal
+        if self.self_improver:
+            try:
+                self.self_improver.record_negative_feedback(
+                    user_id=user.id if user else 0,
+                    user_message=user_message,
+                    bot_response=f"[ERROR] {exc_type}: {error_msg[:400]}",
+                    task_category="unknown",
+                    model_used="none",
+                )
+                logger.info("📝 Auto-generated improvement proposal from error recovery")
+            except Exception:
+                pass
+
+        # Strategy 5: Friendly user message (no raw error exposed)
+        friendly = self._friendly_error_message(error)
+        await self._safe_answer(message, friendly)
+
+    @staticmethod
+    def _friendly_error_message(error: Exception) -> str:
+        """Return a user-friendly message, hiding technical details."""
+        msg = str(error).lower()
+        if any(k in msg for k in ("message is too long", "too long")):
+            return "😅 Responsnya terlalu panjang untuk Telegram. Coba tanyakan yang lebih spesifik ya!"
+        if any(k in msg for k in ("timeout", "timed out", "connection")):
+            return "⏱️ Koneksi ke model AI sedang lambat. Coba lagi dalam beberapa detik ya!"
+        if any(k in msg for k in ("rate limit", "ratelimit", "too many requests")):
+            return "🚦 Terlalu banyak permintaan ke AI. Tunggu sebentar dan coba lagi ya!"
+        if any(k in msg for k in ("authentication", "unauthorized", "api key", "invalid key")):
+            return "🔐 Ada masalah autentikasi dengan provider AI. Hubungi owner ya!"
+        if any(k in msg for k in ("context length", "token limit", "too large")):
+            return "📏 Percakapan terlalu panjang. Coba /reset untuk mulai dari awal!"
+        if "telegram" in msg:
+            return "📡 Ada masalah dengan Telegram. Coba lagi ya!"
+        return "😅 Maaf, saya sedang mengalami masalah teknis. Coba lagi nanti ya!"
 
     # ---- Implicit Negative Feedback ----
 
