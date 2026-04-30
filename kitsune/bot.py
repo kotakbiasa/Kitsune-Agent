@@ -239,7 +239,9 @@ class KitsuneBot:
             "/reset — Reset percakapan saat ini\n\n"
             "💡 **Tips:**\n"
             "• Langsung kirim pesan untuk mulai chat\n"
-            "• Kirim document/photo untuk cek jenis file dan membaca preview teks"
+            "• Kirim document/photo untuk cek jenis file dan membaca preview teks\n"
+            "• Bilang 'buatkan script Python untuk X' — bot otomatis generate & kirim file\n"
+            "• Bilang 'buatkan config YAML' — bot otomatis generate & kirim file"
         )
         await self._safe_answer(message, help_text, parse_mode=ParseMode.MARKDOWN)
 
@@ -795,6 +797,151 @@ class KitsuneBot:
         else:
             await self._safe_answer(message, "Pengingat tidak ditemukan atau sudah terkirim.")
 
+    # ---- File Generation ----
+
+    @staticmethod
+    def _detect_file_generation_request(text: str) -> str | None:
+        """Detect if user is asking to generate/create a file. Returns suggested filename."""
+        text_lower = text.lower()
+
+        # Must have creation intent
+        create_keywords = r"\b(buatkan|buat|generate|create|tulis|write|simpan|save|export|ekspor|bikin)\b"
+        if not re.search(create_keywords, text_lower):
+            return None
+
+        # Must mention a file type
+        file_indicators = r"\b(file|script|kode|code|program|skrip|konfigurasi|config|dokumen|document|\.py|\.js|\.json|\.yaml|\.yml|\.md|\.txt|\.sh|\.bat|\.html|\.css|\.sql|\.dockerfile)\b"
+        if not re.search(file_indicators, text_lower):
+            return None
+
+        # Try to extract filename from the text
+        filename_patterns = [
+            r"\b(\w+[\w\-]*\.(?:py|js|json|yaml|yml|md|txt|sh|bat|html|css|sql|dockerfile|env|ini|conf|toml|go|rs|java|kt|swift|c|cpp|h))\b",
+            r"\b(nama file|filename|save as|simpan sebagai)\s*[:=]?\s*['\"]?([^'\"\s]{1,60}\.\w{2,8})['\"]?",
+        ]
+
+        for pattern in filename_patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                fname = match.group(1) if len(match.groups()) == 1 else match.group(2)
+                if fname and "." in fname:
+                    return fname.strip()
+
+        # Default filename based on extension hint
+        ext_map = {
+            "python": "generated.py",
+            "javascript": "generated.js",
+            "js": "generated.js",
+            "json": "data.json",
+            "yaml": "config.yaml",
+            "yml": "config.yml",
+            "html": "index.html",
+            "css": "style.css",
+            "sql": "query.sql",
+            "bash": "script.sh",
+            "shell": "script.sh",
+            "docker": "Dockerfile",
+            "dockerfile": "Dockerfile",
+            "markdown": "document.md",
+            "config": "config.yaml",
+            "text": "document.txt",
+        }
+        for keyword, default_name in ext_map.items():
+            if keyword in text_lower:
+                return default_name
+
+        return "generated.py"
+
+    async def _generate_and_send_file(
+        self,
+        message: Message,
+        user_message: str,
+        filename: str,
+        model: str,
+        fallback_model: str | list[str],
+        memory_context: str,
+        conversation_history: list[dict],
+        user_name: str | None = None,
+    ) -> bool:
+        """Generate a file via LLM and send it as an attachment."""
+        logger.info("📄 Generating file '%s' for user request", filename)
+
+        generation_prompt = (
+            f"Generate ONLY the file content for '{filename}' based on the user's request. "
+            f"Do NOT include explanations, markdown formatting outside code blocks, or conversational text. "
+            f"Output the raw file content directly.\n\n"
+            f"User request: {user_message}"
+        )
+
+        try:
+            response = await self.brain.think(
+                user_message=generation_prompt,
+                model=model,
+                fallback_model=fallback_model,
+                memory_context=memory_context,
+                conversation_history=conversation_history,
+                user_name=user_name,
+            )
+        except Exception as e:
+            logger.error("File generation LLM call failed: %s", e)
+            return False
+
+        content = response.content
+
+        # Strip markdown code block wrapper if present
+        content = content.strip()
+        if content.startswith("```"):
+            lines = content.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            elif lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            content = "\n".join(lines)
+
+        content = content.strip()
+        if not content:
+            logger.warning("Generated file content is empty")
+            return False
+
+        # Save to generated files dir
+        gen_dir = self.config.data_dir / "generated"
+        gen_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = self._safe_filename(filename)
+        file_path = gen_dir / safe_name
+
+        # Handle duplicate names
+        if file_path.exists():
+            stem = file_path.stem or "generated"
+            suffix = file_path.suffix
+            for idx in range(1, 1000):
+                candidate = gen_dir / f"{stem}_{idx}{suffix}"
+                if not candidate.exists():
+                    file_path = candidate
+                    safe_name = candidate.name
+                    break
+
+        try:
+            file_path.write_text(content, encoding="utf-8")
+            logger.info("📄 Saved generated file: %s (%d bytes)", file_path, len(content))
+        except OSError as e:
+            logger.error("Failed to save generated file: %s", e)
+            return False
+
+        # Send as document
+        try:
+            await self._safe_send_chat_action(message, action=ChatAction.UPLOAD_DOCUMENT)
+            input_file = FSInputFile(file_path)
+            caption = f"📝 File '{safe_name}' berhasil dibuat!\n\n💡 Prompt: {user_message[:200]}"
+            await message.answer_document(document=input_file, caption=caption)
+            logger.info("📄 Sent generated file to chat: %s", safe_name)
+            return True
+        except Exception as e:
+            logger.error("Failed to send generated file: %s", e)
+            await self._safe_answer(message, f"❌ File dibuat tapi gagal dikirim: {e}")
+            return False
+
     async def _handle_document_message(self, message: Message):
         user = message.from_user
         if not user or not self._is_message_authorized(message):
@@ -991,6 +1138,33 @@ class KitsuneBot:
 
             task_category, _ = await self.router.classify_task(text)
             primary_model, fallback_model = self.router.get_model_for_task(task_category)
+
+            # Auto file generation
+            suggested_filename = self._detect_file_generation_request(text)
+            if suggested_filename:
+                await self._safe_send_chat_action(message, action=ChatAction.UPLOAD_DOCUMENT)
+                memory_context = "\n\n".join(
+                    part
+                    for part in [
+                        self.learner.get_user_profile_context(user.id),
+                        self.memory.get_user_context(user.id, text),
+                    ]
+                    if part
+                )
+                history = self._chat_history.get(hist_key, [])
+                generated = await self._generate_and_send_file(
+                    message=message,
+                    user_message=text,
+                    filename=suggested_filename,
+                    model=primary_model,
+                    fallback_model=fallback_model,
+                    memory_context=memory_context,
+                    conversation_history=history,
+                    user_name=user_name,
+                )
+                if generated:
+                    return
+                # If generation failed, fall through to normal response
 
             # Auto web search for real-time queries
             search_context = ""
