@@ -199,18 +199,22 @@ class KitsuneBot:
         router.message.register(self._cmd_reset, Command("reset"))
         router.message.register(self._handle_document_message, F.document)
         router.message.register(self._handle_photo_message, F.photo)
-        router.message.register(
-            self._handle_message,
-            F.text,
-            lambda message: bool(message.text and not message.text.startswith("/")),
-        )
-        # Group mention/reply handlers
+        # Group mention/reply handlers FIRST so they take priority over _handle_message
         router.message.register(
             self._handle_group_mention,
             F.text,
             lambda message: bool(
                 message.text
                 and message.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}
+            ),
+        )
+        router.message.register(
+            self._handle_message,
+            F.text,
+            lambda message: bool(
+                message.text
+                and not message.text.startswith("/")
+                and message.chat.type == ChatType.PRIVATE
             ),
         )
         router.callback_query.register(self._feedback_callback)
@@ -1472,10 +1476,12 @@ class KitsuneBot:
         # Check if bot is mentioned (@username)
         if self._bot_username and f"@{self._bot_username}" in text:
             is_mention = True
-            # Remove mention from text
-            extracted_text = text.replace(f"@{self._bot_username}", "").strip()
-            # Also remove leading/trailing punctuation around mention
-            extracted_text = re.sub(rf"\b@{re.escape(self._bot_username)}\b[\s:;,.​]*", "", text).strip()
+            # Remove mention from text, handling surrounding whitespace/punctuation
+            extracted_text = re.sub(
+                rf"(?:^|\s)@{re.escape(self._bot_username)}\b[\s:;,.​]*",
+                " ",
+                text,
+            ).strip()
 
         if not is_reply_to_bot and not is_mention:
             return
