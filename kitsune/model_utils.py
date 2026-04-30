@@ -175,6 +175,8 @@ MODEL_ALIASES: dict[str, str] = {
     "my-codex": "custom_codex/codex",
     "custom-codex": "custom_codex/codex",
     "codex-custom": "custom_codex/codex",
+    "gpt-5.5": "custom_codex/codex",
+    "gpt 5.5": "custom_codex/codex",
 }
 
 
